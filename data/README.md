@@ -1,4 +1,4 @@
-# Unpack the match data here prova
+# Unpack the match data here
 
 This folder is empty on purpose. The match assets are gated — see [DATA.md](../DATA.md) for how to
 enrol, accept the terms, and get the download link.
