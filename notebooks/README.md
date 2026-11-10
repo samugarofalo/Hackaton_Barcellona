@@ -10,8 +10,15 @@ risultati. Il CSV finale si rigenera dai moduli, non dal notebook.
 | Notebook | Modulo | Cosa produce |
 |---|---|---|
 | `A1_decoder_segmenti.ipynb` | `pipeline/decoder.py` | `<match>_decoded.npz` |
-| `B1_dfl_palla_morta.ipynb` (in arrivo) | `pipeline/deadball.py` | `<match>_deadball.npz` |
-| `B2_dfl_tocco_controllo.ipynb` (in arrivo) | `pipeline/touch_control.py` | `<match>_rule.npz` |
+| `B1_dfl_palla_morta.ipynb` | `pipeline/deadball.py` | `<match>_deadball.npz` + modello in `models/` |
+| `B2_dfl_tocco_controllo.ipynb` | `pipeline/touch_control.py` | `<match>_rule.npz` |
+
+**Ordine consigliato:** B1 → B2 → A1. B2 e A1 leggono da soli gli output dei notebook precedenti se
+li trovano in `/kaggle/working/dfl_outputs` (nella stessa sessione Kaggle, o caricati come dataset).
+Ognuno gira anche da solo, con stime di ripiego al posto degli output mancanti.
+
+Le istruzioni comuni per Kaggle (codice, partite DFL, `ball_runs.npz`) sono nella sezione A1 qui
+sotto e valgono per tutti e tre.
 
 Il formato dei file che i notebook si passano è descritto in `pipeline/dfl_paths.py`.
 
@@ -95,3 +102,74 @@ numpy, pandas e matplotlib (già presenti nell'immagine Kaggle).
 
 `python pipeline/test_decoder.py` esegue 9 test su dati sintetici, tra cui il confronto con una
 ricerca esaustiva che verifica che il decoder trovi davvero l'ottimo.
+
+---
+
+## B1: rilevatore di palla morta
+
+### Cosa fa
+
+Il baseline scrive `D` dove la palla non è tracciata. Sul nostro tracking la palla manca nel 41% dei
+frame valutati, quasi sempre a gioco fermo ma non sempre. B1 impara a riconoscere il gioco fermo
+dal comportamento dei giocatori, come Lang et al. 2022: 240 feature per frame (velocità collettive,
+forma delle squadre, schieramenti tipici delle riprese, palla fuori campo o ferma, durata
+dell'assenza della palla), anche mediate su finestre da 0,4 a 80 s nel passato e nel futuro.
+
+Il modello è LightGBM (con ripiego su scikit-learn), addestrato su DFL degradato e valutato
+lasciando fuori una partita alla volta. Filtro mediano e soglia si scelgono sulle altre 6 partite.
+Il notebook confronta quattro modi di decidere la `D`: palla mancante, rilevatore, la loro
+combinazione, e la `D` vera come tetto.
+
+### Come eseguirlo
+
+1. Stessi input di A1: codice e partite DFL. `ball_runs.npz` non serve.
+2. Run All. Servono circa 15–20 minuti. Per una prova veloce, da riga di comando:
+   `python pipeline/deadball.py --quick`.
+3. Uscite: `<match>_deadball.npz` in `/kaggle/working/dfl_outputs`, e il modello finale in
+   `/kaggle/working/models` (`deadball_lgbm.txt` + `deadball_meta.json`). Le cartelle si cambiano con
+   `DFL_OUT` e `DEADBALL_MODELS`.
+4. **Scaricare la cartella `models`:** è il modello da applicare poi a BAR-ATH, in locale, con
+   `deadball.predict_p_dead(...)`.
+
+### Cosa riportare al team
+
+- spellF1 a valle per le quattro varianti di `D` e l'F1 sugli stop di almeno 2 s;
+- le 20 feature più importanti;
+- finestra del filtro mediano e soglia scelte.
+
+Test: `python pipeline/test_deadball.py`. Dipendenze: numpy, pandas, scipy, lightgbm (o
+scikit-learn), matplotlib; su Kaggle ci sono già.
+
+---
+
+## B2: regola tocco + conferma del controllo
+
+### Cosa fa
+
+La challenge vuole che il possesso cambi solo con il **controllo** dell'altra squadra, non a ogni
+tocco. B2 prende i tocchi del metodo 4 e accetta un cambio solo se, entro T1 secondi, arriva una
+conferma: un secondo tocco della stessa squadra, una conduzione (un suo giocatore entro R metri
+dalla palla per N frame) o la palla che rallenta vicino a un suo giocatore. Il cambio confermato è
+datato al primo tocco, perché un secondo di ritardo costa circa 0,35 di spellF1. Deviazioni e
+rimpalli non confermati lasciano il possesso all'ultima squadra.
+
+La griglia (72 combinazioni) usa le soglie della letteratura: zona di controllo 1–1,5 m
+(Vidal-Codina 2022, Borghesi 2023), soglia del tocco come in Link & Hoernig 2017. Tutti i parametri,
+anche quelli del metodo 4 di confronto, si scelgono su 6 partite e si misurano sulla settima.
+
+### Come eseguirlo
+
+1. Stessi input di A1, compreso `ball_runs.npz` (senza, usa durate sintetiche e lo segnala: i numeri
+   non sono confrontabili con lo 0,543 del metodo 4).
+2. Se B1 ha già girato, la palla morta viene da B1 (`--dead auto` da riga di comando).
+3. Run All. Con la griglia completa servono alcuni minuti per seme; `QUICK = True` usa una griglia
+   ridotta.
+4. Uscite: `<match>_rule.npz` (`labels`, `p_home`) in `/kaggle/working/dfl_outputs`, usati da A1.
+
+### Cosa riportare al team
+
+- spellF1 e macroF1 di baseline, metodo 4 e tocco + controllo;
+- possessi predetti contro veri per partita (troppi = sfarfallio, troppo pochi = cambi persi);
+- cambi persi, cambi falsi e ritardo mediano dei confini.
+
+Test: `python pipeline/test_touch_control.py`. Dipendenze: numpy, pandas, matplotlib.
