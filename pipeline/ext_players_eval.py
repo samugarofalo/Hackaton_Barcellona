@@ -61,7 +61,8 @@ OUTLINE_PX = 3  # on-pitch tolerance in the image (benches stand a few px beyond
 POLY = 6  # pixel -> pitch polynomial degree (held-out 0.53/0.60 m median; 8 gains < 0.1 m)
 # fixes measured as variants (eval --variant): 1 contrast colour, 2 careful filling, 3 track stitching
 FIX = {"contrast": False, "fill": False, "stitch": False}
-VARIANTS = {"base": (), "fix12": ("contrast", "fill"), "fix123": ("contrast", "fill", "stitch")}
+VARIANTS = {"base": (), "fix1": ("contrast",), "fix2": ("fill",), "fix3": ("stitch",),
+            "fix12": ("contrast", "fill"), "fix123": ("contrast", "fill", "stitch")}
 STITCH_GAP = 50       # frames: a fragment may resume up to 2 s after the previous one ended
 STITCH_SPEED = 8.0    # m/s, a sprint: how far the player can have gone meanwhile
 STITCH_SLACK = 1.0    # m, position noise at the two ends
@@ -145,7 +146,9 @@ def prep():
 def frames(match, w, raw):
     """BGR frames of window w: the re-encoded file, or (raw) a crop of the original clip."""
     if raw:
-        cmd = ["ffmpeg", "-v", "error", "-i", clip(match), "-vf", "crop={}:{}:{}:0".format(WW, WH, WIN_X0[w])]
+        # passthrough: no duplicated frames at timestamp gaps (rawvideo is CFR by default: 6000 vs 5976)
+        cmd = ["ffmpeg", "-v", "error", "-i", clip(match), "-vf", "crop={}:{}:{}:0".format(WW, WH, WIN_X0[w]),
+               "-fps_mode", "passthrough"]
     else:
         cmd = ["ffmpeg", "-v", "error", "-i", window_video(match, w)]
     proc = subprocess.Popen(cmd + ["-an", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"], stdout=subprocess.PIPE)
@@ -620,7 +623,7 @@ def evaluate_match(match, raw, rng):
         xy = full[["px", "py", "x1", "y1", "x2", "y2"]].interpolate(limit_area="inside")
         pc = full[["pL", "pR"]]
         if FIX["contrast"]:  # fix 1: in a contrast the box holds two shirts; vote with isolated frames only
-            pc = pc.where((full.near_own >= PAIR_M).to_numpy()[:, None])
+            pc = pc.mask(full.near_own < PAIR_M, axis=0)
         cc = pc.rolling(2 * VOTE + 1, center=True, min_periods=1).mean()
         if FIX["contrast"]:
             cc = cc.ffill().bfill()  # a contrast longer than the vote window: nearest isolated colour
