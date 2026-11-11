@@ -511,3 +511,36 @@ Metrica: il metodo 4 lì è un po' ottimista.
 
 Il codice (solo `pipeline/` e questo file, niente `data/`) è nel repository privato di squadra,
 ramo `pipeline-fgaza`, con una richiesta di unione verso `main`.
+
+## 12. Tocco visto nell'immagine contro tocco ricostruito in 2D (11/11, `pipeline/ext_touch_eval.py`)
+
+SoccerTrack v2, primi 15 minuti del 1° tempo di due partite, catena completa sul video (persone +
+nostro rilevatore di palla, metodo 4, correzione 2). Verità = azioni di palla etichettate a mano
+(bas/), possesso derivato dagli eventi (proxy più severo della regola della gara: spell mediano
+1,3 s); palla morta presa dalla verità per tutte le varianti, quindi cambia solo l'attribuzione.
+
+Errore trovato e corretto: il tracciatore si agganciava a oggetti fermi sul lato lontano (entro la
+tolleranza di 10 px dal contorno), palla a 56 m da quella vera in 117093. Filtro statico: cella di
+8 px occupata in più di 1500 fotogrammi distinti = non è la palla (camera fissa). Dopo: 1,5 m
+(117093) e 2,9 m (128057) di mediana agli eventi; in 128057 resta una coda (p90 65 m) di un
+oggetto che si muove vicino alla linea lontana, non filtrato.
+
+spellF1 medio sulle due partite (tetto con le azioni vere come tocchi: 0,962):
+
+| variante | spellF1 |
+|---|---|
+| più vicino, finestra 50 | 0,107 |
+| controllo 2D | 0,091 |
+| tocco 2D, T=3 | 0,128 |
+| linea di vista, T=3 | 0,109 |
+| contatto nell'immagine, T=3 | 0,142 |
+| contatto nell'immagine + controllo nell'immagine, T=8 | 0,147 |
+
+Tocchi riconosciuti (±5 fotogrammi): 2D T=3 richiamo 29% / 16%, precisione ≥0,59 / 0,46;
+immagine T=3 richiamo 21% / 14%, precisione ≥0,72 / 0,58; squadra giusta ~80% per tutti.
+
+Conclusioni: il contatto nell'immagine è la fonte di tocchi migliore (+0,02 spellF1, più precisa),
+ma tutte le varianti stanno tra 0,10 e 0,15 contro un tetto di 0,96. Il collo di bottiglia non è
+come si riconosce il tocco ma la palla: vista nel 46% / 29% dei fotogrammi vivi. Due partite sole,
+proxy severo: il guadagno di 0,02 è al limite del rumore. Per la consegna non si integra; resta il
+punto 4 del §8 se avanza tempo.

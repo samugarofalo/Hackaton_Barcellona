@@ -40,6 +40,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 DS = os.path.join(ROOT, "data", "external", "soccertrack-v2")
 OUT = os.path.join(DS, "eval")
+sys.path.insert(0, HERE)
 MODEL = os.path.join(ROOT, "data", "models", "yolo26x.pt")
 
 MATCHES = ("117093", "128057")  # M2 validation, M7 test: the two with a hand-boxed MOT clip
@@ -58,6 +59,7 @@ SIGMA_M, NEAR_M = 1.0, 3.0
 GK_A, GK_B, GK_PRIOR = 0.292, -0.578, 0.092   # DFL depth prior (keepers.py)
 TEACH, MIN_DEPTH = 0.99, 0.0
 OUTLINE_PX = 3  # on-pitch tolerance in the image (benches stand a few px beyond the far line)
+LONG_FRAMES = 22500  # 15 min of the 1st half, for the touch / possession test (ext_touch_eval.py)
 POLY = 6  # pixel -> pitch polynomial degree (held-out 0.53/0.60 m median; 8 gains < 0.1 m)
 # fixes measured as variants (eval --variant): 1 contrast colour, 2 careful filling, 3 track stitching
 FIX = {"contrast": False, "fill": False, "stitch": False}
@@ -143,12 +145,14 @@ def prep():
         print(match, "windows written", flush=True)
 
 
-def frames(match, w, raw):
-    """BGR frames of window w: the re-encoded file, or (raw) a crop of the original clip."""
-    if raw:
+def frames(match, w, raw, long=False):
+    """BGR frames of window w: the re-encoded file, or (raw) a crop of the original clip, or (long) a
+    crop of the first LONG_FRAMES frames of the full 1st-half panorama (the MOT clip is its start)."""
+    if raw or long:
+        src = os.path.join(DS, "videos", match, match + "_panorama_1st_half.mp4") if long else clip(match)
         # passthrough: no duplicated frames at timestamp gaps (rawvideo is CFR by default: 6000 vs 5976)
-        cmd = ["ffmpeg", "-v", "error", "-i", clip(match), "-vf", "crop={}:{}:{}:0".format(WW, WH, WIN_X0[w]),
-               "-fps_mode", "passthrough"]
+        cmd = ["ffmpeg", "-v", "error", "-i", src, "-vf", "crop={}:{}:{}:0".format(WW, WH, WIN_X0[w]),
+               "-fps_mode", "passthrough"] + (["-frames:v", str(LONG_FRAMES)] if long else [])
     else:
         cmd = ["ffmpeg", "-v", "error", "-i", window_video(match, w)]
     proc = subprocess.Popen(cmd + ["-an", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"], stdout=subprocess.PIPE)
@@ -173,22 +177,38 @@ def histogram(lab, hsv):
     return (h / h.sum()).astype(np.float32)
 
 
-def det_path(match, w, raw):
-    return os.path.join(OUT, "det", "{}_w{}{}.npz".format(match, w, "_raw" if raw else ""))
+def det_path(match, w, raw, long=False):
+    return os.path.join(OUT, "det", "{}_w{}{}.npz".format(match, w, "_15m" if long else "_raw" if raw else ""))
 
 
-def detect(raw):
+def ball_path(match, w):
+    return os.path.join(OUT, "det", "{}_w{}_15m_ball.npz".format(match, w))
+
+
+def detect(raw, long=False, matches=MATCHES):
+    """Persons (yolo26x + ByteTrack + colour histograms); with long, also our ball detector
+    (ball_eval: imgsz 1920, conf 0.05) in the same decode pass."""
     from ultralytics import YOLO
     os.makedirs(os.path.join(OUT, "det"), exist_ok=True)
-    for match in MATCHES:
+    for match in matches:
         for w in range(len(WIN_X0)):
-            path = det_path(match, w, raw)
+            path = det_path(match, w, raw, long)
             if os.path.exists(path):
                 continue
             model = YOLO(MODEL)  # fresh ByteTrack per window run
             out = {k: [] for k in ("frame", "conf", "xyxy", "track", "hist")}
+            if long:
+                from ball_link import WEIGHTS as BALL_WEIGHTS
+                ball_model = YOLO(BALL_WEIGHTS)
+                balls = {k: [] for k in ("frame", "conf", "xyxy")}
             t0 = time.time()
-            for frame, image in enumerate(frames(match, w, raw)):
+            for frame, image in enumerate(frames(match, w, raw, long)):
+                if long:
+                    bb = ball_model.predict(image, imgsz=1920, conf=0.05, half=True, device="0", verbose=False)[0].boxes
+                    if len(bb):
+                        balls["frame"].append(np.full(len(bb), frame, np.int32))
+                        balls["conf"].append(bb.conf.cpu().numpy().astype(np.float16))
+                        balls["xyxy"].append((bb.xyxy.cpu().numpy() + [WIN_X0[w], 0, WIN_X0[w], 0]).astype(np.float32))
                 res = model.track(image, persist=True, tracker="bytetrack.yaml", classes=[0, 32],
                                   imgsz=IMGSZ, conf=CONF, half=True, device="0", verbose=False)[0]
                 b = res.boxes
@@ -217,6 +237,8 @@ def detect(raw):
                 out["hist"].append(hist)
                 if frame % 1000 == 0:
                     print(match, w, frame, "{:.1f} fps".format((frame + 1) / (time.time() - t0)), flush=True)
+            if long:
+                np.savez_compressed(ball_path(match, w), **{k: np.concatenate(v) for k, v in balls.items()})
             np.savez_compressed(path, **{k: np.concatenate(v) for k, v in out.items()})
 
 
@@ -389,8 +411,13 @@ def pct(a):
 
 
 # ---------------------------------------------------------------- the chain + metrics, one match
-def evaluate_match(match, raw, rng):
+def evaluate_match(match, raw, rng, long=False):
+    """The chain on one match, scored on the MOT clip. With long, the chain runs on the 15-minute
+    detections (the maestro over all those frames); scores still use the MOT clip only."""
     mot, g, link_d, to_pitch, per_id, defend_left = truth(match)
+    if long:
+        g = load_gsr(match, "1st").assign(frame=lambda d: d.frame - 1)
+        g = g[(g.frame >= 0) & (g.frame < LONG_FRAMES) & (g.team != "")]
     gt_box = np.stack(mot.box.to_numpy())
     R = {"hand_foot_vs_gsr_heldout_m": {"median": round(float(np.median(link_d)), 2),
                                         "p90": round(float(np.percentile(link_d, 90)), 2),
@@ -398,7 +425,7 @@ def evaluate_match(match, raw, rng):
 
     # maestro: GSR points per frame and slot (= the provider's tracking), team per slot
     tids = np.sort(g.tid.unique())
-    F = int(mot.frame.max()) + 1
+    F = LONG_FRAMES if long else int(mot.frame.max()) + 1
     P = np.full((F, len(tids), 2), np.nan)
     col = np.searchsorted(tids, g.tid)
     P[g.frame, col] = g[["px", "py"]].to_numpy()
@@ -416,7 +443,7 @@ def evaluate_match(match, raw, rng):
     # detections of the three windows, panorama pixels; foot on the pitch; matched to truth by IoU
     parts = []
     for w in range(len(WIN_X0)):
-        z = np.load(det_path(match, w, raw))
+        z = np.load(det_path(match, w, raw, long))
         d = pd.DataFrame({"frame": z["frame"], "conf": z["conf"].astype(np.float32),
                           "track": np.where(z["track"] >= 0, z["track"] + 100000 * w, -1)})
         d[["x1", "y1", "x2", "y2"]] = z["xyxy"]
@@ -696,9 +723,10 @@ def evaluate_match(match, raw, rng):
     k = m.gi.to_numpy()
     e_gsr = np.hypot(m.px - mot.px.to_numpy()[k], m.py - mot.py.to_numpy()[k])
     e_box = np.hypot(m.px - mot.fx.to_numpy()[k], m.py - mot.fy.to_numpy()[k])
-    q = lambda e: {"median": round(float(np.median(e)), 2), "p90": round(float(np.percentile(e, 90)), 2)}  # noqa: E731
+    q = lambda e: {"median": round(float(np.median(e)), 2), "p90": round(float(np.percentile(e, 90)), 2)} if len(e) else None  # noqa: E731  # long mode: hand boxes end before F // 2
     R["position_m"] = {"ours_vs_gsr_pitch": q(e_gsr), "ours_vs_hand_box_foot": q(e_box), "hand_box_foot_vs_gsr_pitch": q(link_d),
                        "note": "second half of the clip; pixel->pitch fitted on the first half"}
+    R["_chain"] = {"ours": ours, "slot_team": slot_team, "P": P, "to_pitch": to_pitch, "F": F}
     return R, det
 
 
@@ -735,6 +763,7 @@ def evaluate(raw, variant):
     allr = {}
     for match in MATCHES:
         r, det = evaluate_match(match, raw, rng)
+        r.pop("_chain")
         contact_sheet(match, raw, det, r["officials"].pop("_dropped_track_ids"),
                       os.path.join(OUT, "officials_{}{}.jpg".format(match, suffix)))
         allr[match] = r
@@ -747,9 +776,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("step", choices=["gt", "prep", "detect", "eval"])
     ap.add_argument("--raw", action="store_true", help="no recompression: crop the original panorama")
+    ap.add_argument("--long", action="store_true", help="detect: first 15 min of the full 1st half, + ball")
+    ap.add_argument("--match", choices=MATCHES, help="detect: only this match")
     ap.add_argument("--variant", choices=list(VARIANTS), default="base", help="eval: which fixes are on")
     a = ap.parse_args()
-    {"gt": gt, "prep": prep, "detect": lambda: detect(a.raw), "eval": lambda: evaluate(a.raw, a.variant)}[a.step]()
+    {"gt": gt, "prep": prep, "detect": lambda: detect(a.raw, a.long, [a.match] if a.match else MATCHES), "eval": lambda: evaluate(a.raw, a.variant)}[a.step]()
 
 
 if __name__ == "__main__":
