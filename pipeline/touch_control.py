@@ -36,21 +36,22 @@ the confidence of the last event of the current team (confirmed change, own touc
 time (TAU_S) and faster while the ball is not ours (interpolated / Metrica, TAU_GAP_S), reduced by
 unconfirmed touches of the other team. Its side always agrees with `labels`.
 
-Evaluation (evaluate_all / main): the realistic conditions of dfl_method4.py, with the corrected
-chain of CONTESTO.md section 6 (no Metrica gaps during alive play): dead = Metrica-like ball
-missing, our ball = truth + 0.03 m with gaps drawn from our detector's run lengths, gaps <= 2 s
-interpolated and Metrica elsewhere, players + 0.2 m, 1% wrong team at the ball, fixed seeds.
+Evaluation (evaluate_all / main): the DFL matches as the provided tracking would give them
+(dfl_sim.inputs, the simulation shared with B1, C1 and A1; level in $DFL_SIM): one ball, the
+provided one, also missing in live play; touches are searched on it. Dead = B1's output when it
+exists (--dead auto), else the ball missing. Fixed seeds.
 Compared: baseline +/-50, method 4 (touch only), touch+control. Parameters chosen leave-one-match-
 out (choose on 6, measure on the 7th). Only aggregates are printed.
 
     python pipeline/touch_control.py [--seeds 0 1] [--quick] [--dead auto|metrica|b1] [--no-save]
 Writes <match>_rule.npz (labels, p_home, variant) to dfl_paths.out_dir(), with the parameters
-chosen without that match.
+chosen without that match, and rule_params.json (the best parameters on all the matches, to apply
+to another match) to dfl_paths.models_dir().
 """
 
 import argparse
-import glob
 import itertools
+import json
 import os
 import sys
 
@@ -68,8 +69,8 @@ import dfl_paths  # noqa: E402
 from baseline import smooth  # noqa: E402
 from dfl_bench import SCALE, load, with_halves  # noqa: E402
 from dfl_control import TOUCH_M, touches, touches_across_gaps, run_rule  # noqa: E402
-from dfl_degrade import FPS, degrade, episodes, runs  # noqa: E402
-from dfl_method4 import JITTER_M, METRICA_SMOOTH, PLAYER_NOISE_M, fill, runs_mask  # noqa: E402
+from dfl_degrade import FPS, runs  # noqa: E402
+from dfl_sim import inputs, level  # noqa: E402
 
 # -- parameters ----------------------------------------------------------------------------------
 # Touch threshold T is a change of ball velocity (m/s) over +/- 2 frames (0.16 s), so
@@ -87,8 +88,6 @@ M4_T = (1.0, 2.0, 3.0)                   # method 4, chosen leave-one-match-out 
 MIN_SEP = 3        # frames: a touch fired again within this is the same touch
 V_SLOW = 5.0       # m/s: ball "slowed" near a player (Morra/Borghesi use 8.6 m/s as controllable)
 C_SLOW = 3         # frames of slow ball near the same team
-GAP_FILL = 50      # frames (2 s) interpolated, Metrica beyond (CONTESTO.md section 6)
-BALL_GONE_DEAD = 0.9
 SEEDS = (0,)
 TOL = 25           # frames, tolerance to match a true change of possession in the error analysis
 TAU_S, TAU_GAP_S = 8.0, 2.0
@@ -312,55 +311,12 @@ def method4_labels(f, touch):
 
 # -- realistic conditions ------------------------------------------------------------------------
 
-def ball_run_lengths():
-    """Run lengths (seen / missing) of our ball detector, aggregate only, as dfl_method4 uses.
-    $DFL_BALL_RUNS, <repo>/data/cleanup/ball_runs.npz, or any ball_runs.npz under /kaggle/input
-    (same search as decoder.ball_runs); else (or DFL_BALL_RUNS=synthetic) a synthetic stand-in
-    (warned)."""
-    env = os.environ.get("DFL_BALL_RUNS")
-    paths = [] if env == "synthetic" else [env, os.path.join(ROOT, "data", "cleanup", "ball_runs.npz")]
-    if env != "synthetic":
-        paths += sorted(glob.glob("/kaggle/input/**/ball_runs.npz", recursive=True))
-    for path in paths:
-        if path and os.path.isfile(path):
-            r = np.load(path)
-            return r["seen"], r["gaps"], "measured"
-    rng = np.random.default_rng(12345)
-    print("WARNING: ball_runs.npz not found, using synthetic run lengths (seen ~50, gaps ~12 frames)."
-          " Set DFL_BALL_RUNS for the measured ones.")
-    return rng.geometric(1 / 50, 5000), rng.geometric(1 / 12, 5000), "synthetic"
-
-
-def metrica_dead_ball(rng, ball, alive, alive_gaps=False):
-    """Metrica-like ball: missing over BALL_GONE_DEAD of the stoppages longer than 1 s. Without the
-    2% alive gaps of dfl_degrade by default (corrected chain, CONTESTO.md section 6)."""
-    ball = ball.copy()
-    for a, z in runs(alive == 0):
-        if z - a > FPS and rng.random() < BALL_GONE_DEAD:
-            ball[a:z] = np.nan
-    if alive_gaps:
-        for a, z in episodes(rng, len(ball), 0.02, 0.2, 2.0):
-            ball[a:z][alive[a:z] == 1] = np.nan
-    return ball
-
-
-def simulate(d, seed, run_lengths, alive_gaps=False):
-    """Inputs shaped like ours on one DFL match. Returns dict of arrays."""
-    seen, gaps = run_lengths
-    players, alive = d["players"], d["alive"]
-    team = np.broadcast_to(d["team"], players.shape[:2])
-    rng = np.random.default_rng(seed)
-    gap_ball = metrica_dead_ball(rng, d["ball"][:, :2], alive, alive_gaps)
-    dead = ~np.isfinite(gap_ball[:, 0])
-    metrica = pd.DataFrame(gap_ball).rolling(METRICA_SMOOTH, center=True, min_periods=1).mean().to_numpy(copy=True)
-    metrica[dead] = np.nan
-    ours = d["ball"][:, :2] + rng.normal(0, JITTER_M, (len(alive), 2)) / SCALE
-    ours[~runs_mask(rng, len(alive), seen, gaps)] = np.nan
-    ours[dead] = np.nan
-    p = players + rng.normal(0, PLAYER_NOISE_M, players.shape) / SCALE
-    p, t, _ = degrade("carrier_swap", 0.01, np.random.default_rng(seed + 100), p, team, metrica, alive)
-    ball, src = fill(ours, metrica, GAP_FILL)
-    return dict(players=p, team=t, ball=ball, src=src, metrica=metrica, dead=dead)
+def simulate(d, seed):
+    """One DFL match as the provided tracking would give it (dfl_sim.inputs). Returns dict of
+    arrays; src is 2 where the ball is missing (no touch is searched there), 0 elsewhere."""
+    s = inputs(d, seed)
+    return dict(players=s["players"], team=s["team"], ball=s["ball"], src=np.where(s["missing"], 2, 0),
+                metrica=s["ball"], dead=s["missing"])
 
 
 def dead_from_b1(match):
@@ -405,7 +361,6 @@ def evaluate_all(paths=None, seeds=SEEDS, grid=GRID, dead_source="metrica", gap_
     """Long DataFrame: one row per (match, seed, method, config). keep: set of match names whose
     Features are kept in the returned dict (for saving / plotting)."""
     paths = dfl_paths.match_paths() if paths is None else paths
-    rl = ball_run_lengths()
     rows, kept = [], {}
     cfgs = grid_configs(grid)
     Ts = sorted(set(grid["T"]) | set(M4_T))
@@ -413,7 +368,7 @@ def evaluate_all(paths=None, seeds=SEEDS, grid=GRID, dead_source="metrica", gap_
         match = dfl_paths.match_name(path)
         d, gt = load(path)
         for seed in seeds:
-            s = simulate(d, seed, rl[:2])
+            s = simulate(d, seed)
             dead = s["dead"]
             if dead_source in ("b1", "auto"):
                 b1 = dead_from_b1(match)
@@ -442,7 +397,7 @@ def evaluate_all(paths=None, seeds=SEEDS, grid=GRID, dead_source="metrica", gap_
                 kept[match] = dict(gt=gt, f=f, tcs=tcs)
         if verbose:
             print("partita {}/{} fatta".format(m_i + 1, len(paths)), flush=True)
-    return pd.DataFrame(rows), kept, rl[2]
+    return pd.DataFrame(rows), kept, level()
 
 
 def lomo(df):
@@ -485,7 +440,16 @@ def parse_cfg(name):
     return dict(T=float(T), T1=float(T1), R=float(R), N=int(N), fallback_n=int(fb) or None)
 
 
-def save_outputs(kept, chosen, seed=SEEDS[0], tag="realistic"):
+def save_params(df):
+    """rule_params.json: the best touch+control parameters on all the matches (in-sample), to apply
+    the rule to another match."""
+    path = os.path.join(dfl_paths.models_dir(), "rule_params.json")
+    with open(path, "w") as fh:
+        json.dump(dict(parse_cfg(top_configs(df, k=1).index[0]), sim=level()), fh, indent=1)
+    return path
+
+
+def save_outputs(kept, chosen, seed=SEEDS[0], tag=None):
     """<match>_rule.npz per kept match, with the cfg chosen leave-one-match-out."""
     written = []
     for match, k in kept.items():
@@ -494,7 +458,8 @@ def save_outputs(kept, chosen, seed=SEEDS[0], tag="realistic"):
         lab, p_home, _ = run_touch_control(k["f"], k["tcs"][c["T"]], c["T1"], c["R"], c["N"], c["fallback_n"])
         path = dfl_paths.out_path(match, "rule")
         np.savez_compressed(path, labels=lab, p_home=p_home,
-                            variant=np.array("B2 touch+control {} | {} seed{} | LOMO".format(name, tag, seed)))
+                            variant=np.array("B2 touch+control {} | sim:{} seed{} | LOMO".format(
+                                name, tag or level(), seed)))
         written.append(path)
     return written
 
@@ -577,7 +542,7 @@ def main(argv=None):
                                      a.dead, a.gap_touches, keep)
     held, chosen = lomo(df)
     pd.set_option("display.width", 200)
-    print("\nlunghezze dei vuoti della palla:", rl_kind, "| palla ferma:", a.dead,
+    print("\nsimulazione:", rl_kind, "| palla ferma:", a.dead,
           "| partite:", len(paths), "| semi:", a.seeds)
     print("\nLeave-one-match-out (scelta sulle altre partite, misura sulla tenuta fuori):")
     print(summary(held).to_string())
@@ -587,6 +552,7 @@ def main(argv=None):
     print(top_configs(df).to_string())
     if not a.no_save:
         written = save_outputs(kept, chosen, a.seeds[0])
+        print("parametri finali in", save_params(df))
         print("\nscritti {} file _rule.npz in {}".format(len(written), dfl_paths.out_dir()))
     return df, held, chosen
 

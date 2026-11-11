@@ -193,16 +193,17 @@ def test_pipeline_on_fake_matches():
         np.savez(os.path.join(conv, "DFL-MAT-FAKE{}.npz".format(m)), players=players, ball=ball,
                  team=np.array(["H"] * (P // 2) + ["A"] * (P - P // 2)), alive=alive,
                  possession=poss, half=half)
-    keys = ("DFL_CONVERTED", "DFL_OUT", "DFL_BALL_RUNS")
+    keys = ("DFL_CONVERTED", "DFL_OUT", "MTAH_MODELS")
     old = {k: os.environ.get(k) for k in keys}
     os.environ["DFL_CONVERTED"], os.environ["DFL_OUT"] = conv, out
-    os.environ["DFL_BALL_RUNS"] = "synthetic"   # never touch data/ in a test
+    os.environ["MTAH_MODELS"] = os.path.join(tmp, "models")   # never write in the repo in a test
     try:
         df, held, chosen = tc.main(["--quick", "--seeds", "0"])
         assert set(held.method) == {"baseline +/-50", "metodo 4 (solo tocco)", "tocco + controllo"}
         z = np.load(os.path.join(out, "DFL-MAT-FAKE0_rule.npz"))
         assert z["labels"].shape == (n,) and z["p_home"].dtype == np.float32
         assert set(np.unique(z["labels"])) <= {"H", "A", "D"} and str(z["variant"]).startswith("B2")
+        assert os.path.isfile(os.path.join(tmp, "models", "rule_params.json"))
     finally:
         for k, v in old.items():  # restore the caller's settings (the notebook's, on Kaggle)
             if v is None:

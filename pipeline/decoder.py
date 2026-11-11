@@ -47,7 +47,6 @@ Determinism: on exact ties H < A < D in label order, and "stay" beats "change" (
     python pipeline/decoder.py            # the DFL evaluation below; prints aggregate tables only
 """
 
-import glob
 import os
 import sys
 
@@ -62,10 +61,9 @@ K = 3
 NEG = float("-inf")
 EPS = 1e-4
 
-# -- evaluation settings (DFL, conditions of dfl_method4.py) -----------------------------------
+# -- evaluation settings (DFL, conditions of dfl_sim.py) ---------------------------------------
 SEEDS = (0, 1)
 TOUCH_T = 3.0            # touch threshold, m/s (one of dfl_method4's values)
-GAP_FILL = 13            # our ball: gaps <= 13 frames interpolated, longer ones Metrica (method4 variant)
 SWITCH_COSTS = (4.0, 8.0, 16.0, 32.0, 64.0, 128.0)
 MIN_DURS = ((12, 25), (25, 25), (50, 25), (25, 50))   # (H and A, D) in frames; D >= 1 s (Lang et al. 2022)
 REFINE_WINDOW = 12
@@ -73,6 +71,7 @@ TOUCH_BONUS = 0.5        # context variant: a change onto the toucher's team at 
 PRESS_NEAR_M, PRESS_FAR_M = 1.5, 5.0   # pressure variant: new team's nearest player to the ball ...
 PRESS_CHEAP, PRESS_DEAR = 0.5, 0.5     # ... within 1.5 m: change 50% cheaper; none within 5 m: 50% dearer
 NET_WEIGHT = 1.0         # weight of C1's p_home (<match>_net.npz) in log-odds, when the file exists
+NET_WEIGHTS = (0.0, 0.5, 1.0)   # ... chosen with the other parameters when the file exists (0 = network off)
 
 
 # -- the decoder -------------------------------------------------------------------------------
@@ -381,31 +380,14 @@ def pressure_context(d_home, d_away, switch_cost, near_m=PRESS_NEAR_M, far_m=PRE
     return ctx
 
 
-# -- DFL evaluation (conditions of dfl_method4.py) ---------------------------------------------
+# -- DFL evaluation (conditions of dfl_sim.py) -------------------------------------------------
 
 def _bench():
     for p in (ROOT, os.path.join(ROOT, "starter"), os.path.join(ROOT, "evaluation"), HERE):
         if p not in sys.path:
             sys.path.insert(0, p)
-    import dfl_paths, dfl_bench, dfl_degrade, dfl_control, dfl_method4  # noqa: E401
-    return dfl_paths, dfl_bench, dfl_degrade, dfl_control, dfl_method4
-
-
-def ball_runs():
-    """(seen, gaps, source) run lengths of 'our' ball for dfl_method4.runs_mask.
-
-    The measured ones (data/cleanup/ball_runs.npz, aggregate run lengths only; $DFL_BALL_RUNS or any
-    ball_runs.npz under /kaggle/input) when present. Otherwise a placeholder: geometric lengths,
-    mean 40 frames seen and 8 missing -- NOT measured, upload ball_runs.npz for the real numbers.
-    """
-    cands = [os.environ.get("DFL_BALL_RUNS"), os.path.join(ROOT, "data", "cleanup", "ball_runs.npz")]
-    cands += sorted(glob.glob("/kaggle/input/**/ball_runs.npz", recursive=True))
-    for c in cands:
-        if c and os.path.isfile(c):
-            r = np.load(c)
-            return r["seen"], r["gaps"], "measured"
-    g = np.random.default_rng(12345)
-    return g.geometric(1 / 40.0, 2000), g.geometric(1 / 8.0, 2000), "placeholder"
+    import dfl_paths, dfl_bench, dfl_sim, dfl_control  # noqa: E401
+    return dfl_paths, dfl_bench, dfl_sim, dfl_control
 
 
 def _external(dfl_paths, match, F):
@@ -422,47 +404,32 @@ def _external(dfl_paths, match, F):
     return out
 
 
-def simulate(d, seed, runs=None):
-    """Evidence for one match under dfl_method4's conditions; same random draws, same order.
-
-    Returns a dict: dead (ball missing in the Metrica-like ball), baseline labels (nearest +/- 50
-    on the Metrica ball), and on our filled ball: near, dist, touches, rule labels (touch rule).
-    """
-    import pandas as pd
-    _, dfl_bench, dfl_degrade, dfl_control, m4 = _bench()
+def evidence(players, team, ball):
+    """What the decoder reads from a tracking with one ball (NaN where missing), the same on a
+    simulated DFL match and on the provided one: dead (ball missing), baseline labels (nearest
+    +/- 50), near, dist, touches, rule labels (touch rule), distance of each team from the ball."""
+    _, dfl_bench, _, dfl_control = _bench()
     from baseline import smooth
-    if runs is None:
-        runs = ball_runs()
-    players, alive = d["players"], d["alive"]
-    team = np.broadcast_to(d["team"], players.shape[:2])
-    F = len(alive)
-    rng = np.random.default_rng(seed)
-    gap_ball = dfl_degrade.metrica_like_ball(rng, d["ball"][:, :2], alive)
-    dead = ~np.isfinite(gap_ball[:, 0])
-    metrica = pd.DataFrame(gap_ball).rolling(m4.METRICA_SMOOTH, center=True, min_periods=1).mean().to_numpy(copy=True)
-    metrica[dead] = np.nan
-    ours = d["ball"][:, :2] + rng.normal(0, m4.JITTER_M, (F, 2)) / dfl_bench.SCALE
-    ours[~m4.runs_mask(rng, F, runs[0], runs[1])] = np.nan
-    ours[dead] = np.nan
-    p = players + rng.normal(0, m4.PLAYER_NOISE_M, players.shape) / dfl_bench.SCALE
-    p, t, _ = dfl_degrade.degrade("carrier_swap", 0.01, np.random.default_rng(seed + 100), p, team, metrica, alive)
-
-    near_m, _ = dfl_control.nearest(p, t, metrica)
-    codes = np.where(near_m == "H", 0, np.where(near_m == "A", 1, -1))
+    team = np.broadcast_to(team, players.shape[:2])
+    dead = ~np.isfinite(ball[:, 0])
+    near, dist = dfl_control.nearest(players, team, ball)
+    codes = np.where(near == "H", 0, np.where(near == "A", 1, -1))
     w50 = smooth(np.where(dead, -1, codes), 50).copy()
     w50[dead] = "D"
-
-    b, src = m4.fill(ours, metrica, GAP_FILL)
-    near, dist = dfl_control.nearest(p, t, b)
-    tc = dfl_control.touches(b, dist, TOUCH_T)
-    tc &= ~pd.Series(src == 2).rolling(5, center=True, min_periods=1).max().to_numpy().astype(bool)
+    tc = dfl_control.touches(ball, dist, TOUCH_T)
     rule = dfl_control.run_rule(near, dist, dead, None, 0, tc)
-    dd = np.linalg.norm((p - b[:, None]) * dfl_bench.SCALE, axis=2)
+    dd = np.linalg.norm((players - ball[:, None]) * dfl_bench.SCALE, axis=2)
     dd = np.where(np.isnan(dd), np.inf, dd)
-    d_home = np.where(t == "H", dd, np.inf).min(1)
-    d_away = np.where(t == "A", dd, np.inf).min(1)
+    d_home = np.where(team == "H", dd, np.inf).min(1)
+    d_away = np.where(team == "A", dd, np.inf).min(1)
     return {"dead": dead, "baseline": w50, "near": near, "dist": dist, "touch": tc, "rule": rule,
-            "ball_missing": ~np.isfinite(b[:, 0]), "d_home": d_home, "d_away": d_away}
+            "ball_missing": dead, "d_home": d_home, "d_away": d_away}
+
+
+def simulate(d, seed, level=None):
+    """Evidence for one DFL match seen as the provided tracking would give it (dfl_sim.inputs)."""
+    s = _bench()[2].inputs(d, seed, level)
+    return evidence(s["players"], s["team"], s["ball"])
 
 
 def match_logp(ev, ext=None, net_weight=NET_WEIGHT):
@@ -477,8 +444,9 @@ def grid():
     return [(sc, {"H": ha, "A": ha, "D": dd}) for sc in SWITCH_COSTS for ha, dd in MIN_DURS]
 
 
-def param_name(sc, md):
-    return "sw{:g}_min{}/{}".format(sc, md["H"], md["D"])
+def param_name(sc, md, w=None):
+    """w: weight of C1's network, in the name only when it is one of the choices."""
+    return "sw{:g}_min{}/{}".format(sc, md["H"], md["D"]) + ("" if w is None else "_net{:g}".format(w))
 
 
 def predict(ev, logp, half, sc, md, extras=True):
@@ -499,14 +467,22 @@ def evaluate_dfl(seeds=SEEDS, use_files=True, save=True, verbose=True):
 
     Returns {"summary": DataFrame (method x spellF1/macroF1 mean/min/max over matches),
              "params": {match: chosen param name}, "per_match": DataFrame, "sources": str}.
-    Saves <match>_decoded.npz (seed seeds[0], parameters chosen on the other matches).
+    Saves <match>_decoded.npz (seed seeds[0], parameters chosen on the other matches) and
+    decoder_params.json (the best parameters on all the matches, to apply to another match).
     """
+    import json
     import pandas as pd
-    dfl_paths, dfl_bench, _, _, _ = _bench()
-    runs = ball_runs()
-    G = grid()
+    dfl_paths, dfl_bench, dfl_sim, _ = _bench()
+    level = dfl_sim.level()
     rows, cache, used = [], {}, set()
     paths = dfl_paths.match_paths()
+    if use_files and any(os.path.isfile(dfl_paths.out_path(dfl_paths.match_name(p), kind))
+                         for p in paths for kind in ("deadball", "rule", "net")):
+        # B1 / B2 / C1 computed their files on the inputs of the first seed only: on another seed
+        # they would have seen the ball where this simulation has a gap, and inflate the score.
+        seeds = seeds[:1]
+    has_net = use_files and any(os.path.isfile(dfl_paths.out_path(dfl_paths.match_name(p), "net")) for p in paths)
+    G = [(sc, md, w) for sc, md in grid() for w in (NET_WEIGHTS if has_net else (None,))]
     for path in paths:
         match = dfl_paths.match_name(path)
         npz, gt = dfl_bench.load(path)
@@ -515,47 +491,53 @@ def evaluate_dfl(seeds=SEEDS, use_files=True, save=True, verbose=True):
         ext = _external(dfl_paths, match, len(gt)) if use_files else {}
         used |= set(ext)
         for seed in seeds:
-            ev = simulate(d, seed, runs)
-            logp = match_logp(ev, ext)
-            cache[(match, seed)] = (ev, logp)
+            ev = simulate(d, seed, level)
+            logps = {w: match_logp(ev, ext, NET_WEIGHT if w is None else w) for w in {g[2] for g in G}}
+            cache[(match, seed)] = (ev, logps)
             rows.append((match, seed, "baseline nearest +/-50", "", *dfl_bench.score(hd, gt, ev["baseline"])))
             rows.append((match, seed, "touch rule T{:g}".format(TOUCH_T), "", *dfl_bench.score(hd, gt, ev["rule"])))
-            for sc, md in G:
-                pred = decode(logp, d["half"], sc, md)
-                rows.append((match, seed, "grid", param_name(sc, md), *dfl_bench.score(hd, gt, pred)))
+            for sc, md, w in G:
+                pred = decode(logps[w], d["half"], sc, md)
+                rows.append((match, seed, "grid", param_name(sc, md, w), *dfl_bench.score(hd, gt, pred)))
         if verbose:
             print(match, "done", flush=True)
     df = pd.DataFrame(rows, columns=["match", "seed", "method", "params", "macro_f1", "spell_f1"])
 
     grid_df = df[df.method == "grid"].groupby(["match", "params"])["spell_f1"].mean().unstack()
     chosen, final = {}, []
-    by_name = {param_name(sc, md): (sc, md) for sc, md in G}
+    by_name = {param_name(sc, md, w): (sc, md, w) for sc, md, w in G}
     for path in paths:
         match = dfl_paths.match_name(path)
         others = grid_df.drop(index=match) if len(grid_df) > 1 else grid_df
         means = others.mean(axis=0)
         best = sorted(means.index, key=lambda n: (-means[n], n))[0]  # fixed tie-break by name
         chosen[match] = best
-        sc, md = by_name[best]
+        sc, md, w = by_name[best]
         npz, gt = dfl_bench.load(path)
         half = npz["half"]
         for seed in seeds:
-            ev, logp = cache[(match, seed)]
-            for method, pred in predict(ev, logp, half, sc, md).items():
+            ev, logps = cache[(match, seed)]
+            for method, pred in predict(ev, logps[w], half, sc, md).items():
                 final.append((match, seed, method + " (LOMO)", best, *dfl_bench.score({"half": half}, gt, pred)))
                 if save and method == "decoder" and seed == seeds[0]:
                     np.savez_compressed(dfl_paths.out_path(match, "decoded"), labels=pred.astype("<U1"),
-                                        variant=np.array("A1 decoder {} seed{} files:{} runs:{}".format(
-                                            best, seed, "+".join(sorted(used)) or "none", runs[2])))
+                                        variant=np.array("A1 decoder {} seed{} files:{} sim:{}".format(
+                                            best, seed, "+".join(sorted(used)) or "none", level)))
     df = pd.concat([df, pd.DataFrame(final, columns=df.columns)], ignore_index=True)
 
     per_match = df[df.method != "grid"].groupby(["method", "match"], sort=False)[["spell_f1", "macro_f1"]].mean()
     summary = per_match.groupby(level="method", sort=False).agg(["mean", "min", "max"]).round(3)
     best_fixed = grid_df.mean(axis=0).sort_values(ascending=False).head(5).round(3)
-    sources = "p_dead: {}, p_home B2: {}, p_home C1 net: {}, ball runs: {}".format(
+    sources = "p_dead: {}, p_home B2: {}, p_home C1 net: {}, simulation: {}".format(
         "B1 file" if "p_dead" in used else "fallback (ball missing)",
         "yes" if "p_home" in used else "no",
-        "yes (weight {:g})".format(NET_WEIGHT) if "p_home_net" in used else "no", runs[2])
+        "yes (weight chosen among {})".format(NET_WEIGHTS) if "p_home_net" in used else "no", level)
+    if save:
+        means = grid_df.mean(axis=0)
+        sc, md, w = by_name[sorted(means.index, key=lambda n: (-means[n], n))[0]]
+        with open(os.path.join(dfl_paths.models_dir(), "decoder_params.json"), "w") as fh:
+            json.dump(dict(switch_cost=sc, min_dur=md, net_weight=NET_WEIGHT if w is None else w,
+                           sources=sources, matches=len(paths)), fh, indent=1)
     if verbose:
         print("\nsources:", sources)
         print("\nspellF1 / macroF1 over {} matches x {} seeds (decoder: parameters chosen on the other matches)".format(
@@ -566,21 +548,21 @@ def evaluate_dfl(seeds=SEEDS, use_files=True, save=True, verbose=True):
         print("\nbest fixed parameters on all matches (in-sample, for reference), mean spellF1:")
         print(best_fixed.to_string())
     return {"summary": summary, "params": chosen, "per_match": per_match, "grid": grid_df,
-            "sources": sources, "cache": cache}
+            "sources": sources, "cache": cache, "by_name": by_name}
 
 
 def example(result, match=None, seed=None):
     """(gt, {method: labels}, half) for one match, from evaluate_dfl's result, to plot."""
-    dfl_paths, dfl_bench, _, _, _ = _bench()
+    dfl_paths, dfl_bench, _, _ = _bench()
     paths = {dfl_paths.match_name(p): p for p in dfl_paths.match_paths()}
     match = match or sorted(result["params"])[0]
     seed = SEEDS[0] if seed is None else seed
     npz, gt = dfl_bench.load(paths[match])
-    ev, logp = result["cache"][(match, seed)]
+    ev, logps = result["cache"][(match, seed)]
     best = result["params"][match]
-    sc, md = {param_name(s, m): (s, m) for s, m in grid()}[best]
+    sc, md, w = result["by_name"][best]
     preds = {"baseline +/-50": ev["baseline"], "touch rule": ev["rule"]}
-    preds["decoder " + best] = decode(logp, npz["half"], sc, md)
+    preds["decoder " + best] = decode(logps[w], npz["half"], sc, md)
     return match, gt, preds
 
 

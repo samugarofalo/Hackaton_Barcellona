@@ -66,8 +66,8 @@ def fake_match(seed, n=N_FRAMES):
 
 
 class Env:
-    """Temporary folders for converted matches, outputs, models and ball runs (never data/)."""
-    KEYS = ("DFL_CONVERTED", "DFL_OUT", "PLAYER_NET_MODELS", "DFL_BALL_RUNS")
+    """Temporary folders for converted matches, outputs and models (never data/)."""
+    KEYS = ("DFL_CONVERTED", "DFL_OUT", "PLAYER_NET_MODELS")
 
     def __init__(self, n_matches=3):
         self.tmp = tempfile.mkdtemp()
@@ -76,14 +76,10 @@ class Env:
             os.makedirs(p)
         for m in range(n_matches):
             np.savez(os.path.join(self.dirs["DFL_CONVERTED"], "DFL-MAT-FAKE{}.npz".format(m)), **fake_match(m))
-        g = np.random.default_rng(7)
-        self.runs = os.path.join(self.tmp, "ball_runs.npz")
-        np.savez(self.runs, seen=g.geometric(1 / 40, 500), gaps=g.geometric(1 / 15, 500))
 
     def __enter__(self):
         self.old = {k: os.environ.get(k) for k in self.KEYS}
         os.environ.update(self.dirs)
-        os.environ["DFL_BALL_RUNS"] = self.runs
         return self
 
     def __exit__(self, *a):
@@ -95,14 +91,14 @@ class Env:
 
 
 def test_inputs_match_decoder_simulate():
-    """Same draws as decoder.simulate: same dead mask and same nearest player of the chain."""
+    """Same simulated match as decoder.simulate: same ball gaps and same nearest player."""
     d = fake_match(0)
-    runs = (np.full(50, 30), np.full(50, 10), "test")
-    inp = pn.degraded_inputs(d, 0, runs)
-    ev = dec.simulate(d, 0, runs)
-    assert (inp["dead"] == ev["dead"]).all()
+    inp = pn.degraded_inputs(d, 0)
+    ev = dec.simulate(d, 0)
+    assert (np.isnan(inp["ours"][:, 0]) == ev["dead"]).all()
     assert (pn.chain_nearest(inp) == ev["near"]).all()
-    assert np.isnan(inp["ours"][:, 0]).mean() > 0.1, "our ball has gaps"
+    assert np.isnan(inp["ours"][:, 0]).mean() > 0.02, "the ball has gaps"
+    assert np.isnan(inp["metrica"]).all() and not inp["dead"].any()
 
 
 def test_attack_sign():
@@ -185,8 +181,7 @@ def test_end_to_end():
             z = np.load(os.path.join(env.dirs["DFL_OUT"], "DFL-MAT-FAKE{}_net.npz".format(m)))
             assert z["p_home"].shape == (N_FRAMES,) and z["p_home"].dtype == np.float32
             assert str(z["variant"]).startswith("C1")
-            inp = pn.degraded_inputs(fake_match(m), pn.TRAIN_SEED, dec.ball_runs())
-            assert (z["p_home"][inp["dead"]] == 0.5).all()
+            assert ((z["p_home"] > 0) & (z["p_home"] < 1)).all()
         assert os.path.isfile(os.path.join(env.dirs["PLAYER_NET_MODELS"], "player_net.pt"))
         assert os.path.isfile(os.path.join(env.dirs["PLAYER_NET_MODELS"], "player_net.json"))
         model = pn.load_model(device="cpu")

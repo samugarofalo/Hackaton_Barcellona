@@ -14,16 +14,26 @@ risultati. Il CSV finale si rigenera dai moduli, non dal notebook.
 | `B2_dfl_tocco_controllo.ipynb` | `pipeline/touch_control.py` | `<match>_rule.npz` |
 | `C1_rete_giocatori.ipynb` | `pipeline/player_net.py` | `<match>_net.npz` + modello in `models/` (GPU) |
 
-**Per eseguirli tutti e tre insieme** usare `00_esegui_tutti.ipynb`: su Kaggle ogni notebook ha la
-sua cartella `/kaggle/working`, quindi tre notebook separati non si vedono gli output a vicenda.
-Questo li esegue in fila nella stessa sessione (30–45 minuti, `QUICK = True` per una prova veloce).
+**Per eseguirli tutti insieme** usare `00_esegui_tutti.ipynb`: su Kaggle ogni notebook ha la
+sua cartella `/kaggle/working`, quindi notebook separati non si vedono gli output a vicenda.
+Questo li esegue in fila nella stessa sessione, una volta per ogni livello della simulazione
+(`QUICK = True` per una prova veloce).
 
-**Ordine consigliato:** B1 → B2 → A1. B2 e A1 leggono da soli gli output dei notebook precedenti se
-li trovano in `/kaggle/working/dfl_outputs` (nella stessa sessione Kaggle, o caricati come dataset).
-Ognuno gira anche da solo, con stime di ripiego al posto degli output mancanti.
+**Ordine:** B1 → B2 → C1 → A1. Ognuno legge da solo gli output dei precedenti se li trova in
+`dfl_paths.out_dir()` (nella stessa sessione Kaggle, o caricati come dataset). Ognuno gira anche da
+solo, con stime di ripiego al posto degli output mancanti.
 
-Le istruzioni comuni per Kaggle (codice, partite DFL, `ball_runs.npz`) sono nella sezione A1 qui
-sotto e valgono per tutti e tre.
+**Una sola simulazione.** Tutti i moduli vedono le partite DFL come le darebbe il tracking fornito
+dalla gara (`pipeline/dfl_sim.py`): una sola palla, che manca anche a gioco vivo, e giocatori senza
+identità. Tre livelli, `easy`, `medium` (default) e `hard`, scelti con la variabile `DFL_SIM`: una
+scelta si tiene solo se regge su tutti e tre. Il perché è in `ARCHITETTURA.md`.
+
+**Dalla DFL alla nostra partita.** I modelli e i parametri finali finiscono in
+`dfl_paths.models_dir()` (`MTAH_MODELS`): vanno scaricati e messi in `models/`. Poi, in locale:
+`python pipeline/make_submission.py --out evaluation/results/<squadra>.csv`.
+
+Le istruzioni comuni per Kaggle (codice, partite DFL) sono nella sezione A1 qui sotto e valgono
+per tutti.
 
 Il formato dei file che i notebook si passano è descritto in `pipeline/dfl_paths.py`.
 
@@ -38,7 +48,7 @@ sequenza H / A / D di ogni tempo in un colpo solo. Ogni cambio di segmento costa
 segmento deve durare almeno un numero minimo di frame. Così uno sfarfallio breve non spezza un
 possesso, e un cambio vero viene messo dove l'evidenza cambia, non mezza finestra dopo.
 
-Il notebook confronta su DFL, nelle condizioni realistiche di `dfl_method4.py`:
+Il notebook confronta su DFL, nelle condizioni di `dfl_sim.py`:
 
 1. baseline ±50;
 2. regola del tocco (metodo 4);
@@ -67,21 +77,17 @@ Tutti i dataset devono essere **privati**.
 2. **Le partite DFL convertite:** i file `DFL-MAT-*.npz` prodotti da `pipeline/convert_dfl.py`. Il
    notebook li cerca da solo sotto `/kaggle/input`. Se ci sono solo gli XML originali, va prima
    eseguito `convert_dfl.py` (oppure impostare `DFL_CONVERTED` alla cartella con gli `.npz`).
-3. **Facoltativo ma consigliato: `data/cleanup/ball_runs.npz`.** Contiene le lunghezze aggregate dei
-   tratti in cui il nostro rilevatore vede o perde la palla, e serve a simulare le condizioni reali.
-   Senza questo file il notebook usa lunghezze indicative e stampa `placeholder`: i numeri restano
-   confrontabili tra metodi, ma non con quelli di `dfl_method4.py`. È un aggregato ricavato da
-   BAR-ATH, quindi va solo in un dataset privato. In alternativa: variabile `DFL_BALL_RUNS`.
-4. **Facoltativo: gli output di B1 e B2** (`<match>_deadball.npz`, `<match>_rule.npz`). Se sono in
-   `/kaggle/working/dfl_outputs`, il decoder li usa al posto delle stime di ripiego.
+3. **Facoltativo: gli output di B1, B2 e C1** (`<match>_deadball.npz`, `<match>_rule.npz`,
+   `<match>_net.npz`). Se sono in `/kaggle/working/dfl_outputs`, il decoder li usa al posto delle
+   stime di ripiego. Devono venire dallo stesso livello della simulazione.
 
 ### Come eseguirlo
 
 1. Aprire `notebooks/A1_decoder_segmenti.ipynb` su Kaggle (File → Import notebook, o dalla repo).
-2. Aggiungere i dataset dei punti 1–3 con "Add Input".
+2. Aggiungere i dataset dei punti 1–2 con "Add Input".
 3. Eseguire tutte le celle in ordine (Run All). Servono pochi minuti, senza GPU.
 4. Controllare l'output della prima cella dopo il setup: deve dire quante partite ha trovato (7) e
-   se `ball_runs` è quello vero o `placeholder`.
+   il livello della simulazione.
 5. Leggere la tabella della sezione 4: una riga per metodo, con media, minimo e massimo sulle 7
    partite. Differenze sotto circa 0,04 di spellF1 sono rumore.
 6. Scaricare da `/kaggle/working/dfl_outputs` i file `<match>_decoded.npz`, se servono ad altri
@@ -95,7 +101,7 @@ dati in `data/external/bassek2025/converted/`.
 - spellF1 medio di ogni metodo e i parametri scelti nei fold (la cella che stampa
   `parametri scelti nei fold`);
 - se il contesto "pressione" batte il costo costante;
-- se `ball_runs` era quello vero o il `placeholder`.
+- il livello della simulazione e la riga `sources`.
 
 Solo numeri aggregati su DFL. Niente dati o output della partita BAR-ATH in strumenti AI online.
 
@@ -127,7 +133,7 @@ combinazione, e la `D` vera come tetto.
 
 ### Come eseguirlo
 
-1. Stessi input di A1: codice e partite DFL. `ball_runs.npz` non serve.
+1. Stessi input di A1: codice e partite DFL.
 2. Run All. Servono circa 15–20 minuti. Per una prova veloce, da riga di comando:
    `python pipeline/deadball.py --quick`.
 3. Uscite: `<match>_deadball.npz` in `/kaggle/working/dfl_outputs`, e il modello finale in
@@ -164,12 +170,12 @@ anche quelli del metodo 4 di confronto, si scelgono su 6 partite e si misurano s
 
 ### Come eseguirlo
 
-1. Stessi input di A1, compreso `ball_runs.npz` (senza, usa durate sintetiche e lo segnala: i numeri
-   non sono confrontabili con lo 0,543 del metodo 4).
+1. Stessi input di A1.
 2. Se B1 ha già girato, la palla morta viene da B1 (`--dead auto` da riga di comando).
 3. Run All. Con la griglia completa servono alcuni minuti per seme; `QUICK = True` usa una griglia
    ridotta.
-4. Uscite: `<match>_rule.npz` (`labels`, `p_home`) in `/kaggle/working/dfl_outputs`, usati da A1.
+4. Uscite: `<match>_rule.npz` (`labels`, `p_home`) in `/kaggle/working/dfl_outputs`, usati da A1, e
+   `rule_params.json` nella cartella dei modelli (solo da riga di comando).
 
 ### Cosa riportare al team
 
@@ -185,16 +191,17 @@ Test: `python pipeline/test_touch_control.py`. Dipendenze: numpy, pandas, matplo
 
 ### Cosa fa
 
-Quando la nostra palla si perde, il decoder resta senza indizi su chi ha il possesso: sulla
-simulazione DFL questi vuoti costano −0,107 di spellF1. C1 addestra una piccola rete PyTorch che
-stima P(home) dal movimento dei giocatori, anche senza palla.
+La palla fornita si perde anche a gioco vivo, per secondi interi: lì il decoder resta senza
+indizi su chi ha il possesso. C1 addestra una piccola rete PyTorch che stima P(home) dal movimento
+dei giocatori, anche senza palla.
 
 - **Struttura:** una TCN condivisa per ogni oggetto, poi una media pesata con attenzione per casa,
   ospiti e palla. Il risultato non dipende dall'ordine degli slot, quindi funziona anche sul
   tracking reale senza identità.
 - **Riferimenti:** Borghesi et al. 2023 e Kim et al. 2023 ("Ball Radar").
-- **Training:** sulle 7 partite DFL degradate come in `decoder.simulate`. In più la palla viene
-  nascosta a blocchi, così la rete impara anche senza.
+- **Training:** sulle 7 partite DFL degradate come in `decoder.simulate` (`dfl_sim.py`), comprese
+  le tracce che cambiano slot. In più la palla viene nascosta a blocchi, così la rete impara anche
+  senza.
 
 Finestra e dimensione della rete si confrontano lasciando fuori una partita alla volta:
 
@@ -206,7 +213,7 @@ vuoto. Tra quelle entro 0,5 punti, vince la più piccola.
 
 ### Come eseguirlo
 
-1. Stessi input di A1, compreso `ball_runs.npz`. **Accelerator = GPU T4.**
+1. Stessi input di A1. **Accelerator = GPU T4.**
 2. Run All. Tempi con la T4:
    - griglia completa (6 configurazioni × 7 fold, modello finale e decoder a valle): circa
      45–75 minuti;
@@ -217,7 +224,8 @@ vuoto. Tra quelle entro 0,5 punti, vince la più piccola.
    [--grid-w 100 250] [--grid-ch 32 64 128] [--no-downstream]`.
 3. Uscite:
    - `<match>_net.npz` (`p_home` out-of-fold) in `/kaggle/working/dfl_outputs`. A1 lo legge da
-     solo, con peso `decoder.NET_WEIGHT`.
+     solo e sceglie il suo peso tra `decoder.NET_WEIGHTS` insieme agli altri parametri (0 = la rete
+     non aiuta).
    - Il modello finale `player_net.pt` + `player_net.json` in `/kaggle/working/models`. La cartella
      si cambia con `PLAYER_NET_MODELS`.
 4. **Scaricare la cartella `models`:** serve per applicare la rete a BAR-ATH in locale, anche su
@@ -229,7 +237,7 @@ vuoto. Tra quelle entro 0,5 punti, vince la più piccola.
   giocatore più vicino, configurazione scelta;
 - l'accuratezza senza nessuna palla;
 - lo spellF1 di A1 con e senza la rete;
-- se `ball_runs` era quello vero o il `placeholder`.
+- il livello della simulazione.
 
 Test: `python pipeline/test_player_net.py`, su partite sintetiche e CPU. Dipendenze: torch (già
 nell'immagine Kaggle), numpy, pandas, matplotlib.

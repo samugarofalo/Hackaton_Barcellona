@@ -1,19 +1,19 @@
 """C1: a small network on the players that tells which team has the ball, also when the ball is lost.
 
-Why. On the DFL simulation of our chain the gaps of our ball are its largest cost (-0.107 spellF1,
-CONTESTO.md section 6): without the ball there is no touch and no nearest player, so the decoder
-has no H/A evidence there. But the players still move like the team in possession (it advances
+Why. The provided ball is also lost in live play (DATA.md), for seconds at a time: without the
+ball there is no touch and no nearest player, so the decoder has no H/A evidence there. But the
+players still move like the team in possession (it advances
 and spreads out, the other one falls back and closes the ball carrier down). Borghesi et al. 2023
 reach 86% possession accuracy on optical tracking with a TCN per object and a permutation-
 invariant aggregation (ablation: ~50% from the ball alone, ~85% with ball + team of the objects);
 Kim et al. 2023 ("Ball Radar", Set Transformer + Bi-LSTM) reach 85% team possession with the ball
 completely hidden, 97% with 80% of it hidden. Implemented here from scratch, small, in PyTorch.
 
-Data (other games, so training here is allowed): the 7 DFL matches degraded exactly as
-decoder.simulate does (same functions, same random draws in the same order, seed TRAIN_SEED):
-players + 0.2 m and 1% wrong team at the ball, the Metrica-like ball (missing on dead stretches,
-blurred over 12 frames), "our" ball = truth + 0.03 m, present / absent in runs drawn from
-decoder.ball_runs(). Examples = windows of W frames centred on alive frames (GT alive == 1,
+Data (other games, so training here is allowed): the 7 DFL matches as the provided tracking would
+give them (dfl_sim.inputs, the simulation shared with B1, B2 and A1, seed TRAIN_SEED, level in
+$DFL_SIM): one ball, the provided one, blurred and also missing in live play; players with noise,
+drop-outs and tracks that change slot, as the provided slots do. That ball goes in the first ball
+slot (called "ours" below); the second one stays empty. Examples = windows of W frames centred on alive frames (GT alive == 1,
 possession H/A), every `stride` frames. Target = DFL possession of the centre frame; auxiliary
 target = a change of possession within +/- 0.5 s.
 
@@ -25,7 +25,7 @@ players + 2 balls (ours, Metrica), padding + mask:
     position relative to the reference ball (ours if seen, else Metrica) and its distance, and a
     flag "no ball at all". A missing ball is an object whose missing flag is on.
 Ball masking in training: on top of the simulated gaps, on a share of the examples our ball is
-hidden in blocks (lengths from ball_runs, up to x3), on some examples for the whole window, and on
+hidden in blocks (lengths dfl_sim.MASK_GAPS, up to x3), on some examples for the whole window, and on
 some both balls: the network must also work with no ball.
 
 Architecture (PlayerNet): a TCN shared by all objects (1x1 input projection, 5 residual blocks
@@ -51,8 +51,8 @@ Inference: predict_p_home(...) -> P(home) per frame (sliding window, batches, ev
 frames and interpolated in log-odds, 0.5 on dead frames); works on real tracking too (slots
 without identity, NaN, team per frame), on CPU.
 
-Outputs: <match>_net.npz (p_home (F,) float32, out-of-fold, 0.5 where the ball is estimated dead
-= the Metrica-like ball missing, as in the rest of the chain; variant) via dfl_paths.out_path.
+Outputs: <match>_net.npz (p_home (F,) float32, out-of-fold, on every frame: whether the ball is
+dead is B1's and the decoder's business; variant) via dfl_paths.out_path.
 Evaluation (aggregates only): accuracy of the possession per match on alive frames, split between
 our ball seen and our ball in a gap, against the nearest player to the ball of the A1 chain on the
 same frames; the same with no ball at all; spellF1 of the A1 decoder with and without p_home.
@@ -87,8 +87,8 @@ import decoder as dec  # noqa: E402
 import dfl_paths  # noqa: E402
 from dfl_bench import SCALE, load, score  # noqa: E402
 from dfl_control import nearest  # noqa: E402
-from dfl_degrade import FPS, degrade, metrica_like_ball  # noqa: E402
-from dfl_method4 import JITTER_M, METRICA_SMOOTH, PLAYER_NOISE_M, fill, runs_mask  # noqa: E402
+from dfl_degrade import FPS  # noqa: E402
+from dfl_sim import MASK_GAPS, inputs, level  # noqa: E402
 
 # -- parameters ----------------------------------------------------------------------------------
 P_MAX = 24               # player slots per window (22 on the pitch + substitutions / fragments)
@@ -144,31 +144,18 @@ def offsets(W):
 
 # -- simulated inputs ----------------------------------------------------------------------------
 
-def degraded_inputs(d, seed, runs):
-    """Inputs shaped like ours on one DFL match: the same draws, in the same order, as
-    decoder.simulate (so its evidence and these inputs are the same simulated match).
-    Returns players (F,P,2), team (F,P), ours (F,2), metrica (F,2) normalised 0-1, dead (F,)."""
-    players, alive = d["players"], d["alive"]
-    team = np.broadcast_to(d["team"], players.shape[:2])
-    F = len(alive)
-    rng = np.random.default_rng(seed)
-    gap_ball = metrica_like_ball(rng, d["ball"][:, :2], alive)
-    dead = ~np.isfinite(gap_ball[:, 0])
-    metrica = pd.DataFrame(gap_ball).rolling(METRICA_SMOOTH, center=True, min_periods=1).mean().to_numpy(copy=True)
-    metrica[dead] = np.nan
-    ours = d["ball"][:, :2] + rng.normal(0, JITTER_M, (F, 2)) / SCALE
-    ours[~runs_mask(rng, F, runs[0], runs[1])] = np.nan
-    ours[dead] = np.nan
-    p = players + rng.normal(0, PLAYER_NOISE_M, players.shape) / SCALE
-    p, t, _ = degrade("carrier_swap", 0.01, np.random.default_rng(seed + 100), p, team, metrica, alive)
-    return dict(players=p, team=t, ours=ours, metrica=metrica, dead=dead)
+def degraded_inputs(d, seed):
+    """One DFL match as the provided tracking would give it (dfl_sim.inputs, as decoder.simulate).
+    Returns players (F,S,2), team (F,S), ours (F,2) = the provided ball, metrica (F,2) = empty
+    second ball slot, normalised 0-1, dead (F,) = no frame is skipped."""
+    s = inputs(d, seed)
+    return dict(players=s["players"], team=s["team"], ours=s["ball"],
+                metrica=np.full_like(s["ball"], np.nan), dead=np.zeros(len(s["ball"]), bool))
 
 
 def chain_nearest(inp):
-    """Team of the player nearest the ball of the A1 chain (ours, gaps <= decoder.GAP_FILL
-    interpolated, Metrica beyond): the evidence the decoder has, for the comparison."""
-    b, _ = fill(inp["ours"], inp["metrica"], dec.GAP_FILL)
-    near, _ = nearest(inp["players"], inp["team"], b)
+    """Team of the player nearest the ball: the evidence the decoder has, for the comparison."""
+    near, _ = nearest(inp["players"], inp["team"], inp["ours"])
     return near
 
 
@@ -289,7 +276,7 @@ class Store:
 
 
 def _ball_masks(B, T, step, gen, cfg, gaps, dev):
-    """Training-time hiding of the balls: blocks of our ball (lengths from ball_runs x 1-3, half of
+    """Training-time hiding of the balls: blocks of our ball (lengths dfl_sim.MASK_GAPS x 1-3, half of
     them over the centre), our ball for the whole window, or both balls for the whole window."""
     def rand(n):
         return torch.rand(n, generator=gen, device=dev)
@@ -693,22 +680,23 @@ def frame_metrics(gt, p, inp, near=None):
 
 
 def choose(table, tie=TIE):
-    """Fixed rule: best mean acc_gap over the folds; within `tie` of it, the fewest parameters."""
-    best = table["acc_gap"].max()
-    cand = table[table["acc_gap"] >= best - tie]
-    return cand.sort_values(["params", "acc_gap"], ascending=[True, False]).index[0]
+    """Fixed rule: best mean acc_gap over the folds; within `tie` of it, the fewest parameters.
+    (acc_all where the simulation has no gap in live play, level "easy".)"""
+    col = "acc_gap" if table["acc_gap"].notna().all() else "acc_all"
+    best = table[col].max()
+    cand = table[table[col] >= best - tie]
+    return cand.sort_values(["params", col], ascending=[True, False]).index[0]
 
 
 def downstream(data, oof, matches, net_weight=dec.NET_WEIGHT, verbose=True):
     """spellF1 / macroF1 of the A1 decoder with and without p_home of the network, decoder
     parameters chosen leave-one-match-out (as decoder.evaluate_dfl), seed TRAIN_SEED (the seed of
     the network's inputs). B1 / B2 files are used in both variants when present."""
-    runs = dec.ball_runs()
     G = dec.grid()
     rows = []
     for match in matches:
         d, gt = data[match]["d"], data[match]["gt"]
-        ev = dec.simulate(d, TRAIN_SEED, runs)
+        ev = dec.simulate(d, TRAIN_SEED)
         ext = dec._external(dfl_paths, match, len(gt))
         ext.pop("p_home_net", None)
         lps = {"A1 senza rete": dec.match_logp(ev, ext),
@@ -750,15 +738,14 @@ def run(quick=False, epochs=None, device=None, grid_w=None, grid_ch=None, stride
     paths = dfl_paths.match_paths()
     names = [dfl_paths.match_name(p) for p in paths]
     n_folds = min(len(names), folds or q.get("folds", len(names)))
-    runs = dec.ball_runs()
     if verbose:
-        print("dispositivo: {} | partite: {} | fold: {} | lunghezze dei vuoti della palla: {}".format(
-            dev, len(names), n_folds, runs[2]), flush=True)
+        print("dispositivo: {} | partite: {} | fold: {} | simulazione: {}".format(
+            dev, len(names), n_folds, level()), flush=True)
     data, preps = {}, []
     for p, m in zip(paths, names):
         npz, gt = load(p)
         d = {k: npz[k] for k in ("players", "team", "ball", "alive", "half")}
-        inp = degraded_inputs(d, TRAIN_SEED, runs)
+        inp = degraded_inputs(d, TRAIN_SEED)
         prep = prepare(inp["players"], inp["team"], inp["ours"], inp["metrica"], d["half"])
         data[m] = dict(d=d, gt=gt, inp=inp, near=chain_nearest(inp))
         preps.append(prep)
@@ -786,7 +773,7 @@ def run(quick=False, epochs=None, device=None, grid_w=None, grid_ch=None, stride
                 print("  fold {}/{}: test {}, validazione {}, {} partite di training".format(
                     i + 1, n_folds, i + 1, (i + 1) % len(names) + 1 if val else "-", len(train)), flush=True)
             model, info = train_model(store, _cat([ex[m] for m in train]), ex[val] if val else None, cfg,
-                                      runs[1], verbose)
+                                      MASK_GAPS, verbose)
             inp = data[test]["inp"]
             p = predict_p_home(model, inp["players"], inp["team"], inp["ours"], inp["metrica"],
                                data[test]["d"]["half"], inp["dead"], stride=pred_stride, device=dev)
@@ -826,8 +813,8 @@ def run(quick=False, epochs=None, device=None, grid_w=None, grid_ch=None, stride
         for test in test_matches:
             path = dfl_paths.out_path(test, "net")
             np.savez_compressed(path, p_home=oof[(chosen, test)].astype(np.float32),
-                                variant=np.array("C1 player_net {} | out-of-fold seed{} | runs:{}".format(
-                                    chosen, TRAIN_SEED, runs[2])))
+                                variant=np.array("C1 player_net {} | out-of-fold seed{} | sim:{}".format(
+                                    chosen, TRAIN_SEED, level())))
             written.append(path)
         if verbose:
             print("scritti {} file _net.npz in {}".format(len(written), dfl_paths.out_dir()))
@@ -842,10 +829,10 @@ def run(quick=False, epochs=None, device=None, grid_w=None, grid_ch=None, stride
         fcfg = dict(ccfg, epochs=n_ep)
         if verbose:
             print("\nmodello finale {} su tutte le {} partite, {} epoche".format(chosen, len(names), n_ep), flush=True)
-        final, _ = train_model(store, _cat([exs[ccfg["W"]][m] for m in names]), None, fcfg, runs[1], verbose)
+        final, _ = train_model(store, _cat([exs[ccfg["W"]][m] for m in names]), None, fcfg, MASK_GAPS, verbose)
         model_path = save_model(final, dict(chosen=chosen, selection_rule="max mean acc_gap; within {} the fewest params".format(TIE),
                                             grid=table.round(4).reset_index().to_dict("records"),
-                                            ball_runs=runs[2], train_seed=TRAIN_SEED, matches=len(names)))
+                                            sim=level(), train_seed=TRAIN_SEED, matches=len(names)))
         if verbose:
             print("modello salvato in", model_path)
     examples_ = {m: dict(gt=data[m]["gt"], p=oof[(chosen, m)], gap=~np.isfinite(data[m]["inp"]["ours"][:, 0]),
@@ -853,7 +840,7 @@ def run(quick=False, epochs=None, device=None, grid_w=None, grid_ch=None, stride
     del store
     return dict(grid=table.round(3), per_match=per_match, chosen=chosen, ablation=ablation.round(3),
                 downstream=ds, written=written, model_path=model_path, examples=examples_,
-                device=str(dev), ball_runs=runs[2])
+                device=str(dev), sim=level())
 
 
 # -- plot ----------------------------------------------------------------------------------------

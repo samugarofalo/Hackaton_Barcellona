@@ -22,6 +22,11 @@ Output: what the notebooks hand to each other, one file per match and per produc
 
 F = number of frames of that match's converted npz, same order. Every file also stores
 `variant` (a short string: which condition / seed / parameters produced it).
+
+Models and chosen parameters, to apply the chain to another match (make_submission.py):
+    $MTAH_MODELS if set, else /kaggle/working/models on Kaggle, else <repo>/models locally.
+    deadball_lgbm.txt + deadball_meta.json (B1), rule_params.json (B2), player_net.pt + .json (C1),
+    decoder_params.json (A1).
 """
 
 import glob
@@ -62,6 +67,13 @@ def match_paths():
 
 def out_dir():
     path = os.environ.get("DFL_OUT") or (KAGGLE_OUT if on_kaggle() else LOCAL_OUT)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def models_dir():
+    path = os.environ.get("MTAH_MODELS") or (
+        "/kaggle/working/models" if on_kaggle() else os.path.join(ROOT, "models"))
     os.makedirs(path, exist_ok=True)
     return path
 

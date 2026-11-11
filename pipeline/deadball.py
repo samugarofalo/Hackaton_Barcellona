@@ -6,9 +6,10 @@ misses the stoppages where the ball is still tracked. Here P(dead) per frame is 
 collective motion and shape of the players (Lang et al. 2022, Sci. Rep.: positions only, temporal
 context of +/- 0.4 ... 80 s, ~92% per-frame accuracy) plus ball features where available.
 
-Training data: the 7 converted DFL matches (other games, CC BY 4.0), degraded to look like our
-inputs: ball from dfl_degrade.metrica_like_ball, players + Gaussian noise and 1% carrier swaps as
-in dfl_method4.py, plus random player drop-outs (our slots have gaps). Fixed seeds.
+Training data: the 7 converted DFL matches (other games, CC BY 4.0), degraded to look like the
+provided tracking by dfl_sim.inputs (the simulation shared with B2, C1 and A1; level in $DFL_SIM):
+the ball also missing in live play and still there in some stoppages, players with noise, drop-outs
+and tracks that change slot. Fixed seeds.
 
 Model: LightGBM binary (sklearn HistGradientBoosting if lightgbm is missing). Leave-one-match-out:
 each match is predicted by a model trained on the other 6 (out-of-fold p_dead). Post-processing:
@@ -42,15 +43,12 @@ for _p in (ROOT, os.path.join(ROOT, "starter"), os.path.join(ROOT, "evaluation")
 
 import dfl_paths  # noqa: E402
 from dfl_bench import SCALE, load, score  # noqa: E402
-from dfl_degrade import metrica_like_ball, degrade  # noqa: E402
+from dfl_sim import inputs, level  # noqa: E402
 from baseline import smooth  # noqa: E402
 
 FPS = 25
 VMAX = 12.0          # m/s, faster than any player: a slot switch or a tracking jump
 AMAX = 15.0          # m/s^2
-PLAYER_NOISE_M = 0.2  # as dfl_method4
-CARRIER_SWAP = 0.01   # as dfl_method4
-PLAYER_DROP = 0.05    # share of player-frames dropped in 1-6 s episodes (our slots have gaps)
 SHIFTS_S = (0.4, 0.8, 2, 4, 20)
 LONG_SHIFTS_S = (40, 80)
 WINDOWS = (1, 51, 91, 151)            # median filter, frames (91 = 3.64 s, Lang et al.)
@@ -316,18 +314,10 @@ def features(d, ball, players, team=None, pitch=SCALE, long_shifts=True):
 
 # -- realistic inputs --------------------------------------------------------------------------
 
-def degraded_inputs(d, seed=0, player_drop=PLAYER_DROP):
-    """(ball (F,2), players (F,P,2), team (F,P)) shaped like our tracking, fixed seeds."""
-    alive = d["alive"]
-    players = d["players"]
-    team = np.broadcast_to(d["team"], players.shape[:2])
-    rng = np.random.default_rng(seed)
-    ball = metrica_like_ball(rng, d["ball"][:, :2], alive)
-    p = players + (rng.normal(0, PLAYER_NOISE_M, players.shape) / SCALE).astype(players.dtype)
-    p, t, _ = degrade("carrier_swap", CARRIER_SWAP, np.random.default_rng(seed + 100), p, team, ball, alive)
-    if player_drop:
-        p, t, _ = degrade("player_drop", player_drop, np.random.default_rng(seed + 200), p, t, ball, alive)
-    return ball, p, t
+def degraded_inputs(d, seed=0):
+    """(ball (F,2), players (F,S,2), team (F,S)) shaped like the provided tracking, fixed seeds."""
+    s = inputs(d, seed)
+    return s["ball"], s["players"], s["team"]
 
 
 # -- model -------------------------------------------------------------------------------------
@@ -556,6 +546,7 @@ def run(stride=5, long_shifts=True, seed=SEED, windows=WINDOWS, thresholds=THRES
             variant = "lgbm_lomo_seed{}_stride{}_med{}_thr{:g}_min{}{}".format(
                 seed, stride, w, thr, min_dead, "" if long_shifts else "_short") if _has_lgb() else \
                 "hgb_lomo_seed{}_stride{}_med{}_thr{:g}_min{}".format(seed, stride, w, thr, min_dead)
+            variant += "_sim:" + level()
             np.savez_compressed(dfl_paths.out_path(m["name"], "deadball"),
                                 p_dead=m["p_dead"].astype(np.float32), variant=np.array(variant),
                                 threshold=np.float32(thr), window=np.int32(w), min_dead=np.int32(min_dead))
@@ -580,7 +571,7 @@ def run(stride=5, long_shifts=True, seed=SEED, windows=WINDOWS, thresholds=THRES
         final = save_model(model, names, dict(window=int(w), threshold=float(thr), min_dead=int(min_dead),
                                               and_window=int(w2), and_threshold=float(thr2),
                                               long_shifts=bool(long_shifts), stride=int(stride),
-                                              seed=int(seed), n_rounds=int(n_rounds),
+                                              seed=int(seed), n_rounds=int(n_rounds), sim=level(),
                                               matches=[o["name"] for o in data]))
         if verbose:
             print("final model ->", final)
