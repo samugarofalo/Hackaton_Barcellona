@@ -13,6 +13,10 @@ risultati. Il CSV finale si rigenera dai moduli, non dal notebook.
 | `B1_dfl_palla_morta.ipynb` | `pipeline/deadball.py` | `<match>_deadball.npz` + modello in `models/` |
 | `B2_dfl_tocco_controllo.ipynb` | `pipeline/touch_control.py` | `<match>_rule.npz` |
 
+**Per eseguirli tutti e tre insieme** usare `00_esegui_tutti.ipynb`: su Kaggle ogni notebook ha la
+sua cartella `/kaggle/working`, quindi tre notebook separati non si vedono gli output a vicenda.
+Questo li esegue in fila nella stessa sessione (30–45 minuti, `QUICK = True` per una prova veloce).
+
 **Ordine consigliato:** B1 → B2 → A1. B2 e A1 leggono da soli gli output dei notebook precedenti se
 li trovano in `/kaggle/working/dfl_outputs` (nella stessa sessione Kaggle, o caricati come dataset).
 Ognuno gira anche da solo, con stime di ripiego al posto degli output mancanti.
