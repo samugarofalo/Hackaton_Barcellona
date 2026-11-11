@@ -1,10 +1,52 @@
 # Contesto di lavoro: idee, scoperte, decisioni
 
 Note interne del progetto per la gara *More than a Hack 2027* (Metrica Sports). Aggiornato al
-10/11/2026. Consegna: **17/11/2026**.
+11/11/2026. Consegna: **17/11/2026**.
 
 Il file non contiene dati della partita: solo numeri aggregati e riferimenti agli script.
 Gli output stanno in `data/` (ignorato da git).
+
+---
+
+## 0. Dove siamo (riassunto all'11/11)
+
+**Come si misura.** Sulla nostra partita non si può misurare niente (niente etichette a mano, la
+finestra pubblica serve solo alla correttezza): ogni scelta si fa su altre partite, soprattutto le
+7 DFL. La baseline fa 0,243 sulla nostra partita e circa 0,39 su DFL: i numeri DFL valgono in
+relativo, non come previsione del voto. Rumore tra metodi su DFL: circa 0,04.
+
+**1. La regola conta più dei dati.** Su DFL, a parità di ingressi:
+
+| Regola | spellF1 |
+|---|---|
+| Baseline (più vicino, voto ±50) | 0,39 |
+| Tocco | 0,44–0,50 |
+| Tocco + conferma del controllo (B2, ramo `feature/notebooks-dfl`) | 0,52–0,57 |
+| **Decoder a segmenti (A1, stesso ramo)** | **0,55–0,56** |
+
+Il decoder sceglie l'intera sequenza dei possessi facendo pagare ogni cambio: sparisce lo
+sfarfallio, che lo spellF1 punisce. +0,16 sulla baseline, stabile in tutte le condizioni (§15).
+
+**2. Palla: non si migliora oltre, e la nostra vale quanto quella di Metrica.** Il nostro
+rilevatore è preciso a terra (0,6 m contro 1,3 m di Metrica), ma in aria la proiezione da una camera
+sposta la palla di 8–27 m e i tocchi in aria (testa, petto, stop) restano sbagliati. L'omografia è
+giusta (due camere concordano a terra entro 0,23 m). Provati e scartati: 3D da una camera,
+triangolazione col broadcast, traiettorie dritte, grandezza della palla, contatto nell'immagine
+(§10–14). Le simulazioni vecchie davano alla nostra palla la posizione vera: lo 0,58–0,70 era
+gonfiato. Confronto equo: col decoder nostra 0,55, Metrica 0,56.
+
+**3. Giocatori: buoni ma contano poco.** Su SoccerTrack v2 il metodo 4 trova il 95–96% dei
+giocatori, squadra giusta 99% (88–93% nei contrasti); su DFL tutti gli errori sui giocatori valgono
+circa 0,05, i ritocchi millesimi (§11).
+
+**4. Modelli di spotting presi così come sono (T-DEED, AdaSpot):** addestrati sul broadcast,
+sulla camera larga trovano il 7–21% delle azioni con la squadra quasi a caso. Servirebbe un
+riaddestramento di settimane (§14).
+
+**Catena proposta (da confermare):** ATD Metrica (palla + giocatori) → tocco con conferma (B2) →
+decoder (A1) → CSV, D dove manca la palla Metrica. Deterministica (niente GPU né rilevatore),
+spiegabile, misurata solo su DFL. B1 (palla ferma dai giocatori, +0,04 su DFL) è opzionale: su DFL
+è quasi perfetto grazie alla velocità della palla, sulla nostra partita varrà meno.
 
 ---
 
@@ -347,26 +389,26 @@ successivo è il tocco più la conferma del controllo.
   **abbandonata**. Francesco l'ha giudicata pericolosa: si inseguivano i singoli casi.
 - **Omografia:** non si corregge, perché lo scarto sul terreno è di 0,19 m. Correggerla a mano è
   vietato.
-- **Broadcast:** l'allineamento c'è (offset costante per tempo, replay scartati), ma **rimandato**.
-  Si usa solo se avanza tempo.
+- **Broadcast:** allineato (offset costante per tempo, replay scartati) e provato per la palla in 3D
+  con due camere (sezione 11): la triangolazione funziona, ma **non migliora il possesso**. Non entra
+  nella catena.
+- **Giocatori: basta ritocchi** (11/11). Su SoccerTrack v2 gli errori sui giocatori sono piccoli e su
+  DFL valgono in tutto circa 0,05 di spellF1; i ritocchi provati guadagnano millesimi. Entra solo la
+  correzione 2 (riempimento prudente). Il tempo va alla catena finale.
 - **Rilevatore delle persone:** yolo26x a 1920 in FP16. Modelli più grandi o una risoluzione
   maggiore non migliorano.
 
-## 8. Prossimi passi
+## 8. Prossimi passi (aggiornati l'11/11 sera, consegna il 17/11)
 
-1. **Vuoti della nostra palla:** vale fino a 0,1. Ricerca guidata dalla traiettoria, tocco dedotto
-   attraverso il vuoto.
-2. **Tremolio dei giocatori:** misurarlo sulle nostre tracce e, se c'è, levigarlo.
-3. **Regola di possesso:** tocco più conferma del controllo, come chiede la challenge (il tocco
-   senza controllo non cambia il possesso), tarata su DFL.
-4. **Palla ferma:** bordi e interruzioni in cui Metrica tiene la palla, con un riconoscitore
-   addestrato su DFL.
-5. **Catena completa:** CSV, `validate_submission.py`, controllo di correttezza sulla finestra
-   pubblica, verifica di riproducibilità.
-6. **Documento tecnico e repository pubblico**, senza dati.
-7. Se avanza tempo: altre condizioni per i portieri, broadcast nei momenti confusi.
-
----
+1. **Decidere la catena finale.** Proposta in §0: ATD Metrica → B2 → decoder A1 → CSV. Sostituisce
+   la proposta precedente (nostra palla + metodo 4 + tocco di traverso con controllo): la prova
+   equa (§14–15) dà le due strade pari, e il "tocco di traverso + controllo" era sbagliato.
+2. **Un solo script per il CSV**, con D dove manca la palla Metrica e il tratto prima del calcio
+   d'inizio del secondo tempo (113742) = D.
+3. **Controlli:** `validate_submission.py`, finestra pubblica solo per la correttezza, rigenerazione
+   da zero dello stesso file.
+4. **Documento tecnico** a partire da questo file.
+5. Riportare al collega le correzioni alle simulazioni (§15) e unire i rami.
 
 ---
 
@@ -438,3 +480,182 @@ Si cerca la parabola con la gravità che passa per i raggi della camera.
 - **I buchi della palla di Metrica a gioco vivo** (2% simulato; sulla partita sono solo 2) gonfiavano il costo della palla ferma: da −0,1 a −0,03.
 - **La posizione della camera simulata** era sbagliata di 68 m: gli "angoli" erano tutti più bassi del previsto.
 - **Il rumore dei giocatori** era dieci volte troppo alto.
+
+---
+
+## 11. Due camere e giocatori su un dataset esterno (10–11/11)
+
+### Palla in 3D con tattica + broadcast (`pipeline/broadcast_ball.py`, `pipeline/triangulate.py`)
+
+- **Centri delle camere** stimati dai giocatori: la retta che passa per la testa proiettata a terra e
+  per la testa vera (1,8 m sopra il piede) passa per la camera. Tattica circa (53, 116, 29) m,
+  broadcast circa (53, 110, 22) m; stabili su metà indipendenti dei dati.
+- **Palla broadcast:** stesso rilevatore a 1280 (la palla è circa 14 px), stesso filtro di
+  traiettoria, su 93.388 fotogrammi di gioco vivo.
+- **Copertura:** palla vista da entrambe le camere nel 42% dei fotogrammi valutati.
+- **Controlli senza verità:**
+  - i due raggi si incontrano: distanza mediana 0,12 m;
+  - offset di tempo migliore 0 in entrambi i tempi;
+  - palle a terra: i due punti sul campo distano 0,23 m di mediana;
+  - voli: accelerazione verticale mediana −8,1 m/s² (gravità −9,8);
+  - l'altezza ha una deriva lenta di circa ±0,4 m.
+- **Valore per il possesso, simulato su DFL** con il rumore misurato:
+  tocco di traverso senza 3D 0,506; con il 3D stimato 0,504; con il 3D esatto 0,546; baseline 0,436.
+  Con la precisione che abbiamo **non serve**: scartato.
+
+### Giocatori su SoccerTrack v2 (`pipeline/ext_players_eval.py`)
+
+Due partite, 4 minuti ciascuna, contro i riquadri disegnati a mano (`mot/`). Panorama tagliato in
+finestre 1920×1080, giocatori già alla nostra grandezza (46–51 px), ricompresso a 5 Mbit/s come il
+nostro video. Il "maestro" (al posto di Metrica) è il tracking del fornitore BePro, più pulito di
+Metrica: il metodo 4 lì è un po' ottimista.
+
+| | Partita 1 | Partita 2 |
+|---|---|---|
+| Giocatori trovati | 95,5% | 96,0% |
+| …con un altro giocatore entro 1,5 m | 77% | 80% |
+| Squadra giusta quando il colore decide | 99,9% | 99,9% |
+| Metodo 4, squadra giusta | 99,4% | 98,8% |
+| Metodo 4, squadra giusta entro 1,5 m da un altro | 93,0% | 88,1% |
+| Portieri: precisione / squadra giusta | 99,7% / 100% | 99,4% / 100% |
+| Piedi rispetto al riquadro a mano (mediana) | 0,12 m | 0,10 m |
+| Continuità delle tracce (IDF1) | 0,36 | 0,38 |
+
+- **La compressione non costa quasi niente:** sul video originale si guadagnano 0,2–0,5 punti
+  percentuali, nel rumore.
+- **Errore trovato e corretto:** leggere il video originale con ffmpeg in uscita grezza duplicava
+  24 fotogrammi (6000 invece di 5976) e spostava tutto rispetto alle annotazioni. Ora si legge con
+  `-fps_mode passthrough`. La misura ricompressa non ne era toccata.
+
+### Tre correzioni provate, ciascuna da sola (metodo 4, squadra giusta entro 1,5 m)
+
+| | Partita 1 | Partita 2 |
+|---|---|---|
+| Di partenza | 93,0% | 88,1% |
+| 1. Colore dai soli fotogrammi isolati della traccia | 90,7% | 89,1% |
+| **2. Niente riempimento se un altro rilevamento è entro 1,5 m** | **93,7%** | **88,6%** |
+| 3. Cucitura delle tracce (≤ 2 s, raggiungibile a 8 m/s, colore compatibile) | 92,6% | 88,0% |
+
+- **2: tenuta.** Meglio in entrambe; riquadri falsi da 1757 a 1334 e da 2585 a 2344; giocatori
+  trovati −0,4 punti.
+- **1: scartata.** Il colore deciso è giusto meno spesso (da 98,1% a 94,1% e da 99,1% a 96,4%): nei
+  contrasti la traccia passa spesso a un altro giocatore, e il colore di prima porta la squadra
+  sbagliata. Il colore misurato dentro il contrasto è più affidabile del previsto.
+- **3: scartata così com'è.** Tracce lunghe il doppio (IDF1 da 0,36–0,38 a 0,41), ma cuciture
+  sbagliate: riquadri sulla traccia di un altro da 7,6% a 12,1% e da 4,2% a 7,8%, riquadri falsi in
+  aumento, portieri trovati −2 punti nella partita 2.
+- **Conclusione:** i guadagni sono di millesimi di spellF1. Decisione: fermarsi sui giocatori e
+  chiudere la catena (sezioni 7 e 8).
+
+### Repository di squadra
+
+Il codice (solo `pipeline/` e questo file, niente `data/`) è nel repository privato di squadra,
+ramo `pipeline-fgaza`, con una richiesta di unione verso `main`.
+
+## 12. Tocco visto nell'immagine contro tocco ricostruito in 2D (11/11, `pipeline/ext_touch_eval.py`)
+
+SoccerTrack v2, primi 15 minuti del 1° tempo di due partite, catena completa sul video (persone +
+nostro rilevatore di palla, metodo 4, correzione 2). Verità = azioni di palla etichettate a mano
+(bas/), possesso derivato dagli eventi (proxy più severo della regola della gara: spell mediano
+1,3 s); palla morta presa dalla verità per tutte le varianti, quindi cambia solo l'attribuzione.
+
+Errore trovato e corretto: il tracciatore si agganciava a oggetti fermi sul lato lontano (entro la
+tolleranza di 10 px dal contorno), palla a 56 m da quella vera in 117093. Filtro statico: cella di
+8 px occupata in più di 1500 fotogrammi distinti = non è la palla (camera fissa). Dopo: 1,5 m
+(117093) e 2,9 m (128057) di mediana agli eventi; in 128057 resta una coda (p90 65 m) di un
+oggetto che si muove vicino alla linea lontana, non filtrato.
+
+spellF1 medio sulle due partite (tetto con le azioni vere come tocchi: 0,962):
+
+| variante | spellF1 |
+|---|---|
+| più vicino, finestra 50 | 0,107 |
+| controllo 2D | 0,091 |
+| tocco 2D, T=3 | 0,128 |
+| linea di vista, T=3 | 0,109 |
+| contatto nell'immagine, T=3 | 0,142 |
+| contatto nell'immagine + controllo nell'immagine, T=8 | 0,147 |
+
+Tocchi riconosciuti (±5 fotogrammi): 2D T=3 richiamo 29% / 16%, precisione ≥0,59 / 0,46;
+immagine T=3 richiamo 21% / 14%, precisione ≥0,72 / 0,58; squadra giusta ~80% per tutti.
+
+Conclusioni: il contatto nell'immagine è la fonte di tocchi migliore (+0,02 spellF1, più precisa),
+ma tutte le varianti stanno tra 0,10 e 0,15 contro un tetto di 0,96. Il collo di bottiglia non è
+come si riconosce il tocco ma la palla: vista nel 46% / 29% dei fotogrammi vivi. Due partite sole,
+proxy severo: il guadagno di 0,02 è al limite del rumore. Per la consegna non si integra; resta il
+punto 4 del §8 se avanza tempo.
+
+## 13. Metrica in aria e traiettorie dritte (11/11, `pipeline/straight_ball.py`), solo prove
+
+- **Palla di Metrica contro il 3D delle due camere:** sopra i 2 m Metrica sta a 3–4 m dal punto
+  vero, la nostra proiezione a 8–27 m; a terra è il contrario (nostra 0,6 m, Metrica 1,3 m).
+  Regola "Metrica quando le due palle distano > 8 m": cambia il 6,5% dei fotogrammi con 3D, errore
+  lì 11,2 → 4,4 m. Non messa nella catena (decisione: niente di non verificato sul possesso).
+- **Traiettorie dritte** (tratti tra cambi bruschi di velocità; se si scostano dalla corda più di
+  DEV la si sostituisce con la corda): su DFL (35°) spellF1 tocco 0,508 → 0,516, di traverso
+  0,551 → 0,541; sulla partita l'errore in aria scende poco (17 → 16 m sopra i 4 m) e a terra
+  peggiora. Con i tagli presi dalla palla vera (oracolo) l'errore in aria va 5,7 → 2,8 m ma lo
+  spellF1 resta 0,516–0,523 / 0,555–0,557. Cause: la nostra palla ha ~460 cambi bruschi al minuto
+  (rumore), un taglio su quattro cade in aria; i dribbling hanno tocchi troppo lievi per tagliare,
+  quindi curvano e vengono "raddrizzati" a torto; e anche col taglio perfetto il possesso non
+  migliora. Scartata.
+
+## 14. Prova equa sulla palla e modelli di riconoscimento delle azioni (11/11)
+
+### Palla (`pipeline/dfl_ball_fair.py`, DFL, 2 angoli × 2 semi)
+
+La vecchia simulazione dava alla nostra palla la posizione vera (niente errore in aria): 0,583 col
+tocco era un'illusione. Ora la nostra palla è proiettata da una camera come la nostra, con vuoti
+misurati, retta ≤ 2 s e Metrica oltre; Metrica = palla vera levigata su 12 fotogrammi.
+
+| Regola | Metrica | Nostra (proiettata) |
+|---|---|---|
+| baseline ±50 | 0,429 | 0,439 |
+| controllo | 0,426 | 0,461 |
+| tocco T2 | **0,495** | 0,449 |
+| tocco di traverso | 0,351 | **0,515** (0,503 / 0,527) |
+| tocco di traverso + controllo | 0,282 | 0,343 |
+
+- Migliori coppie: nostra + tocco di traverso 0,515; Metrica + tocco 0,495. Differenza dentro le
+  incertezze della simulazione (Metrica simulata è migliore della vera in aria e a terra; la nostra
+  simulata non ha falsi rilevamenti).
+- **"Tocco di traverso + controllo", previsto nel §8, è sbagliato**: il controllo va tolto.
+- Ogni palla ha la sua regola: il tocco di traverso non funziona sulla palla levigata di Metrica.
+
+### Modelli di ball action spotting presi così come sono (`data/external/spotting/`, fuori git)
+
+T-DEED con squadra (checkpoint sn-teamspotting) e AdaSpot (HF, piccolo e grande), addestrati sul
+broadcast SoccerNet. Su SoccerTrack v2 117093, 15 min, 796 azioni vere, tre finestre 1920:
+T-DEED soglia 0,05 trova il 21% delle azioni entro ±0,5 s (85% dei previsti giusti, il caso dà 66%),
+squadra giusta 64% (caso 50%); AdaSpot 7%. Sul panorama intero ridotto quasi niente (1–3%).
+Sulla nostra partita (5 min da 20000): 72 eventi T-DEED a 0,2 (62 "sinistra"), AdaSpot 5–20.
+Video: `data/cleanup/spotting_20000_27499.mp4`. Conclusione: senza riaddestramento sulla nostra
+inquadratura non servono.
+
+## 15. Moduli del collega su DFL (ramo `feature/notebooks-dfl`, 11/11)
+
+Fatti girare in locale (copia di lavoro `../hb-notebooks`, ambiente a parte con LightGBM) sulle 7
+partite DFL, parametri scelti su 6 partite e misurati sulla settima, a rotazione.
+
+- **A1 `decoder.py`:** decoder esatto a segmenti (semi-Markov con durata minima), costo per cambio;
+  ingressi: giocatore più vicino, tocchi, etichette e P(casa) di B2, P(palla morta) di B1.
+- **B1 `deadball.py`:** palla morta da 240 caratteristiche (Lang et al. 2022), LightGBM.
+  Accuratezza per fotogramma 0,998 su DFL, quasi tutta dalla velocità della palla.
+- **B2 `touch_control.py`:** il cambio vale solo se la nuova squadra conferma entro T1 (scelta
+  ricorrente: T1 1,6 s, R 1,5 m, N 4), datato al primo tocco.
+- **C1 `player_net.py`:** rete sui giocatori, non provata (GPU, lunga).
+
+| Condizione | Baseline | Tocco | B2 | Decoder |
+|---|---|---|---|---|
+| Simulazione vecchia (palla senza errore in aria), con B1 | 0,392 | 0,465 | 0,642 | 0,697 |
+| Nostra palla proiettata (camera a 30°), con B1 | 0,392 | 0,375 | 0,542 | 0,591 |
+| Nostra palla proiettata, senza B1 | 0,392 | 0,375 | 0,515 | 0,554 |
+| Solo palla di Metrica (tocchi cercati su di essa), senza B1 | 0,392 | 0,340 | 0,570 | 0,562 |
+
+- Il decoder regge in ogni condizione: +0,16 nella più prudente.
+- Nelle simulazioni del collega la nostra palla non aveva l'errore in aria e il rumore dei giocatori
+  era 0,2 m (misurato: 0,02 m). Interruttori di prova aggiunti nella copia locale, non committati:
+  `DFL_CAM_ANGLE` (palla proiettata) e `DFL_OURS_NONE` (solo palla di Metrica).
+- La Metrica simulata è levigata ma senza i suoi errori veri (1,3 m a terra): il pari tra le due
+  palle è leggermente ottimista per Metrica.
+
