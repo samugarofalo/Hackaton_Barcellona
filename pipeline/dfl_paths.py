@@ -16,6 +16,9 @@ Output: what the notebooks hand to each other, one file per match and per produc
     <match>_rule.npz       written by B2   labels (F,) '<U1' in {H, A, D}
                                            p_home (F,) float32, P(home | ball alive) per frame
     <match>_decoded.npz    written by A1   labels (F,) '<U1' in {H, A, D}
+    <match>_net.npz        written by C1   p_home (F,) float32, P(home | ball alive) per frame from
+                                           the network on the players (player_net.py), out-of-fold;
+                                           0.5 where the ball is estimated dead
 
 F = number of frames of that match's converted npz, same order. Every file also stores
 `variant` (a short string: which condition / seed / parameters produced it).
@@ -64,7 +67,7 @@ def out_dir():
 
 
 def out_path(match, kind):
-    """kind: 'deadball', 'rule' or 'decoded' (see the module docstring)."""
+    """kind: 'deadball', 'rule', 'decoded' or 'net' (see the module docstring)."""
     return os.path.join(out_dir(), "{}_{}.npz".format(match, kind))
 
 

@@ -12,6 +12,7 @@ risultati. Il CSV finale si rigenera dai moduli, non dal notebook.
 | `A1_decoder_segmenti.ipynb` | `pipeline/decoder.py` | `<match>_decoded.npz` |
 | `B1_dfl_palla_morta.ipynb` | `pipeline/deadball.py` | `<match>_deadball.npz` + modello in `models/` |
 | `B2_dfl_tocco_controllo.ipynb` | `pipeline/touch_control.py` | `<match>_rule.npz` |
+| `C1_rete_giocatori.ipynb` | `pipeline/player_net.py` | `<match>_net.npz` + modello in `models/` (GPU) |
 
 **Per eseguirli tutti e tre insieme** usare `00_esegui_tutti.ipynb`: su Kaggle ogni notebook ha la
 sua cartella `/kaggle/working`, quindi tre notebook separati non si vedono gli output a vicenda.
@@ -177,3 +178,58 @@ anche quelli del metodo 4 di confronto, si scelgono su 6 partite e si misurano s
 - cambi persi, cambi falsi e ritardo mediano dei confini.
 
 Test: `python pipeline/test_touch_control.py`. Dipendenze: numpy, pandas, matplotlib.
+
+---
+
+## C1: rete sui giocatori
+
+### Cosa fa
+
+Quando la nostra palla si perde, il decoder resta senza indizi su chi ha il possesso: sulla
+simulazione DFL questi vuoti costano −0,107 di spellF1. C1 addestra una piccola rete PyTorch che
+stima P(home) dal movimento dei giocatori, anche senza palla.
+
+- **Struttura:** una TCN condivisa per ogni oggetto, poi una media pesata con attenzione per casa,
+  ospiti e palla. Il risultato non dipende dall'ordine degli slot, quindi funziona anche sul
+  tracking reale senza identità.
+- **Riferimenti:** Borghesi et al. 2023 e Kim et al. 2023 ("Ball Radar").
+- **Training:** sulle 7 partite DFL degradate come in `decoder.simulate`. In più la palla viene
+  nascosta a blocchi, così la rete impara anche senza.
+
+Finestra e dimensione della rete si confrontano lasciando fuori una partita alla volta:
+
+- W = 100 frame (4 s) o 250 frame (10 s);
+- canali 32, 64 o 128, cioè da circa 30k a 400k parametri.
+
+**Regola di scelta, fissata in anticipo:** vince la miglior accuratezza media con la palla nel
+vuoto. Tra quelle entro 0,5 punti, vince la più piccola.
+
+### Come eseguirlo
+
+1. Stessi input di A1, compreso `ball_runs.npz`. **Accelerator = GPU T4.**
+2. Run All. Tempi con la T4:
+   - griglia completa (6 configurazioni × 7 fold, modello finale e decoder a valle): circa
+     45–75 minuti;
+   - una sola configurazione: circa 10 minuti;
+   - `QUICK = True`, cioè 2 fold, 3 epoche, W = 100 e 64 canali: pochi minuti.
+
+   Da riga di comando: `python pipeline/player_net.py [--quick] [--epochs N] [--device cpu|cuda]
+   [--grid-w 100 250] [--grid-ch 32 64 128] [--no-downstream]`.
+3. Uscite:
+   - `<match>_net.npz` (`p_home` out-of-fold) in `/kaggle/working/dfl_outputs`. A1 lo legge da
+     solo, con peso `decoder.NET_WEIGHT`.
+   - Il modello finale `player_net.pt` + `player_net.json` in `/kaggle/working/models`. La cartella
+     si cambia con `PLAYER_NET_MODELS`.
+4. **Scaricare la cartella `models`:** serve per applicare la rete a BAR-ATH in locale, anche su
+   CPU, con `player_net.load_model()` e `player_net.predict_p_home(...)`.
+
+### Cosa riportare al team
+
+- la tabella della griglia: parametri, accuratezza con palla vista e nel vuoto, confronto con il
+  giocatore più vicino, configurazione scelta;
+- l'accuratezza senza nessuna palla;
+- lo spellF1 di A1 con e senza la rete;
+- se `ball_runs` era quello vero o il `placeholder`.
+
+Test: `python pipeline/test_player_net.py`, su partite sintetiche e CPU. Dipendenze: torch (già
+nell'immagine Kaggle), numpy, pandas, matplotlib.

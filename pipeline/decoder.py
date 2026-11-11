@@ -72,6 +72,7 @@ REFINE_WINDOW = 12
 TOUCH_BONUS = 0.5        # context variant: a change onto the toucher's team at a touch costs 50% less
 PRESS_NEAR_M, PRESS_FAR_M = 1.5, 5.0   # pressure variant: new team's nearest player to the ball ...
 PRESS_CHEAP, PRESS_DEAR = 0.5, 0.5     # ... within 1.5 m: change 50% cheaper; none within 5 m: 50% dearer
+NET_WEIGHT = 1.0         # weight of C1's p_home (<match>_net.npz) in log-odds, when the file exists
 
 
 # -- the decoder -------------------------------------------------------------------------------
@@ -302,7 +303,8 @@ def _logit(p):
 
 def frame_logp(near, dmin, ball_missing=None, touch=None, rule_labels=None, p_dead=None,
                dead_mask=None, p_home_ext=None, near_conf=0.75, near_scale_m=3.0, rule_conf=0.8,
-               touch_conf=0.95, ext_weight=1.0, dead_if_missing=0.9, dead_if_seen=0.02):
+               touch_conf=0.95, ext_weight=1.0, dead_if_missing=0.9, dead_if_seen=0.02,
+               p_home_net=None, net_weight=1.0):
     """(F, 3) log p(H), log p(A), log p(D) from whatever evidence is available. Pure numpy.
 
     near, dmin    team ('H'/'A'/'') and distance (m) of the player nearest the ball
@@ -313,6 +315,9 @@ def frame_logp(near, dmin, ball_missing=None, touch=None, rule_labels=None, p_de
     touch         (F,) bool (dfl_control.touches): the nearest team touched it, touch_conf.
     rule_labels   (F,) H/A/D from a rule (e.g. the touch rule): rule_conf towards its team.
     p_home_ext    (F,) P(home | alive) from B2's <match>_rule.npz, added in log-odds x ext_weight.
+    p_home_net    (F,) P(home | alive) from C1's <match>_net.npz (network on the players), added in
+                  log-odds x net_weight. Unlike the other H/A channels it is kept where the ball is
+                  missing: telling the team without the ball is what the network is for.
     p_dead        (F,) P(dead) from B1's <match>_deadball.npz. If None: from dead_mask (the ball
                   missing in the Metrica-like ball, as the baseline does): dead_if_missing where
                   missing, dead_if_seen elsewhere; if dead_mask is None too, from ball_missing.
@@ -335,6 +340,8 @@ def frame_logp(near, dmin, ball_missing=None, touch=None, rule_labels=None, p_de
     if p_home_ext is not None:
         z = z + ext_weight * _logit(np.nan_to_num(np.asarray(p_home_ext, np.float64), nan=0.5))
     z = np.where(ball_missing, 0.0, z)
+    if p_home_net is not None:
+        z = z + net_weight * _logit(np.nan_to_num(np.asarray(p_home_net, np.float64), nan=0.5))
     p_home = np.clip(1.0 / (1.0 + np.exp(-z)), EPS, 1 - EPS)
     if p_dead is None:
         m = ball_missing if dead_mask is None else np.asarray(dead_mask, bool)
@@ -402,14 +409,16 @@ def ball_runs():
 
 
 def _external(dfl_paths, match, F):
-    """p_dead from B1 and p_home from B2 if their files exist with the right length."""
+    """p_dead from B1, p_home from B2 and p_home_net from C1 if their files exist with the right
+    length (C1's <match>_net.npz stores it as p_home; here it is keyed p_home_net)."""
     out = {}
-    for kind, key in (("deadball", "p_dead"), ("rule", "p_home")):
+    for kind, key, name in (("deadball", "p_dead", "p_dead"), ("rule", "p_home", "p_home"),
+                            ("net", "p_home", "p_home_net")):
         path = dfl_paths.out_path(match, kind)
         if os.path.isfile(path):
             z = np.load(path)
             if key in z.files and len(z[key]) == F:
-                out[key] = z[key].astype(np.float64)
+                out[name] = z[key].astype(np.float64)
     return out
 
 
@@ -456,11 +465,12 @@ def simulate(d, seed, runs=None):
             "ball_missing": ~np.isfinite(b[:, 0]), "d_home": d_home, "d_away": d_away}
 
 
-def match_logp(ev, ext=None):
+def match_logp(ev, ext=None, net_weight=NET_WEIGHT):
     ext = ext or {}
     return frame_logp(ev["near"], ev["dist"], ball_missing=ev["ball_missing"], touch=ev["touch"],
                       rule_labels=ev["rule"], p_dead=ext.get("p_dead"), dead_mask=ev["dead"],
-                      p_home_ext=ext.get("p_home"))
+                      p_home_ext=ext.get("p_home"), p_home_net=ext.get("p_home_net"),
+                      net_weight=net_weight)
 
 
 def grid():
@@ -542,9 +552,10 @@ def evaluate_dfl(seeds=SEEDS, use_files=True, save=True, verbose=True):
     per_match = df[df.method != "grid"].groupby(["method", "match"], sort=False)[["spell_f1", "macro_f1"]].mean()
     summary = per_match.groupby(level="method", sort=False).agg(["mean", "min", "max"]).round(3)
     best_fixed = grid_df.mean(axis=0).sort_values(ascending=False).head(5).round(3)
-    sources = "p_dead: {}, p_home B2: {}, ball runs: {}".format(
+    sources = "p_dead: {}, p_home B2: {}, p_home C1 net: {}, ball runs: {}".format(
         "B1 file" if "p_dead" in used else "fallback (ball missing)",
-        "yes" if "p_home" in used else "no", runs[2])
+        "yes" if "p_home" in used else "no",
+        "yes (weight {:g})".format(NET_WEIGHT) if "p_home_net" in used else "no", runs[2])
     if verbose:
         print("\nsources:", sources)
         print("\nspellF1 / macroF1 over {} matches x {} seeds (decoder: parameters chosen on the other matches)".format(
