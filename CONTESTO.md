@@ -1,10 +1,52 @@
 # Contesto di lavoro: idee, scoperte, decisioni
 
 Note interne del progetto per la gara *More than a Hack 2027* (Metrica Sports). Aggiornato al
-10/11/2026. Consegna: **17/11/2026**.
+11/11/2026. Consegna: **17/11/2026**.
 
 Il file non contiene dati della partita: solo numeri aggregati e riferimenti agli script.
 Gli output stanno in `data/` (ignorato da git).
+
+---
+
+## 0. Dove siamo (riassunto all'11/11)
+
+**Come si misura.** Sulla nostra partita non si può misurare niente (niente etichette a mano, la
+finestra pubblica serve solo alla correttezza): ogni scelta si fa su altre partite, soprattutto le
+7 DFL. La baseline fa 0,243 sulla nostra partita e circa 0,39 su DFL: i numeri DFL valgono in
+relativo, non come previsione del voto. Rumore tra metodi su DFL: circa 0,04.
+
+**1. La regola conta più dei dati.** Su DFL, a parità di ingressi:
+
+| Regola | spellF1 |
+|---|---|
+| Baseline (più vicino, voto ±50) | 0,39 |
+| Tocco | 0,44–0,50 |
+| Tocco + conferma del controllo (B2, ramo `feature/notebooks-dfl`) | 0,52–0,57 |
+| **Decoder a segmenti (A1, stesso ramo)** | **0,55–0,56** |
+
+Il decoder sceglie l'intera sequenza dei possessi facendo pagare ogni cambio: sparisce lo
+sfarfallio, che lo spellF1 punisce. +0,16 sulla baseline, stabile in tutte le condizioni (§15).
+
+**2. Palla: non si migliora oltre, e la nostra vale quanto quella di Metrica.** Il nostro
+rilevatore è preciso a terra (0,6 m contro 1,3 m di Metrica), ma in aria la proiezione da una camera
+sposta la palla di 8–27 m e i tocchi in aria (testa, petto, stop) restano sbagliati. L'omografia è
+giusta (due camere concordano a terra entro 0,23 m). Provati e scartati: 3D da una camera,
+triangolazione col broadcast, traiettorie dritte, grandezza della palla, contatto nell'immagine
+(§10–14). Le simulazioni vecchie davano alla nostra palla la posizione vera: lo 0,58–0,70 era
+gonfiato. Confronto equo: col decoder nostra 0,55, Metrica 0,56.
+
+**3. Giocatori: buoni ma contano poco.** Su SoccerTrack v2 il metodo 4 trova il 95–96% dei
+giocatori, squadra giusta 99% (88–93% nei contrasti); su DFL tutti gli errori sui giocatori valgono
+circa 0,05, i ritocchi millesimi (§11).
+
+**4. Modelli di spotting presi così come sono (T-DEED, AdaSpot):** addestrati sul broadcast,
+sulla camera larga trovano il 7–21% delle azioni con la squadra quasi a caso. Servirebbe un
+riaddestramento di settimane (§14).
+
+**Catena proposta (da confermare):** ATD Metrica (palla + giocatori) → tocco con conferma (B2) →
+decoder (A1) → CSV, D dove manca la palla Metrica. Deterministica (niente GPU né rilevatore),
+spiegabile, misurata solo su DFL. B1 (palla ferma dai giocatori, +0,04 su DFL) è opzionale: su DFL
+è quasi perfetto grazie alla velocità della palla, sulla nostra partita varrà meno.
 
 ---
 
@@ -356,19 +398,17 @@ successivo è il tocco più la conferma del controllo.
 - **Rilevatore delle persone:** yolo26x a 1920 in FP16. Modelli più grandi o una risoluzione
   maggiore non migliorano.
 
-## 8. Prossimi passi (aggiornati l'11/11, consegna il 17/11)
+## 8. Prossimi passi (aggiornati l'11/11 sera, consegna il 17/11)
 
-1. **Catena finale in un solo script**, che produce il CSV:
-   - palla nostra (filtro di continuità + ricerca guidata), interpolata nei vuoti brevi, Metrica in
-     quelli lunghi;
-   - giocatori col metodo 4, portieri, correzione 2 sul riempimento;
-   - tocco di traverso alla linea di vista più conferma del controllo, tarati su DFL;
-   - D dove manca la palla Metrica; tratto prima del calcio d'inizio del secondo tempo (113742) = D.
-     Da correggere in `ball_track.py`: usa 113741.
-2. **Controlli:** `validate_submission.py`, finestra pubblica solo per la correttezza, rigenerazione
-   da zero dello stesso file (riproducibilità).
-3. **Documento tecnico** a partire da questo file.
-4. Solo se avanza tempo: la regola del tocco, dove si perde di più (misurabile su DFL in poche ore).
+1. **Decidere la catena finale.** Proposta in §0: ATD Metrica → B2 → decoder A1 → CSV. Sostituisce
+   la proposta precedente (nostra palla + metodo 4 + tocco di traverso con controllo): la prova
+   equa (§14–15) dà le due strade pari, e il "tocco di traverso + controllo" era sbagliato.
+2. **Un solo script per il CSV**, con D dove manca la palla Metrica e il tratto prima del calcio
+   d'inizio del secondo tempo (113742) = D.
+3. **Controlli:** `validate_submission.py`, finestra pubblica solo per la correttezza, rigenerazione
+   da zero dello stesso file.
+4. **Documento tecnico** a partire da questo file.
+5. Riportare al collega le correzioni alle simulazioni (§15) e unire i rami.
 
 ---
 
@@ -591,3 +631,31 @@ squadra giusta 64% (caso 50%); AdaSpot 7%. Sul panorama intero ridotto quasi nie
 Sulla nostra partita (5 min da 20000): 72 eventi T-DEED a 0,2 (62 "sinistra"), AdaSpot 5–20.
 Video: `data/cleanup/spotting_20000_27499.mp4`. Conclusione: senza riaddestramento sulla nostra
 inquadratura non servono.
+
+## 15. Moduli del collega su DFL (ramo `feature/notebooks-dfl`, 11/11)
+
+Fatti girare in locale (copia di lavoro `../hb-notebooks`, ambiente a parte con LightGBM) sulle 7
+partite DFL, parametri scelti su 6 partite e misurati sulla settima, a rotazione.
+
+- **A1 `decoder.py`:** decoder esatto a segmenti (semi-Markov con durata minima), costo per cambio;
+  ingressi: giocatore più vicino, tocchi, etichette e P(casa) di B2, P(palla morta) di B1.
+- **B1 `deadball.py`:** palla morta da 240 caratteristiche (Lang et al. 2022), LightGBM.
+  Accuratezza per fotogramma 0,998 su DFL, quasi tutta dalla velocità della palla.
+- **B2 `touch_control.py`:** il cambio vale solo se la nuova squadra conferma entro T1 (scelta
+  ricorrente: T1 1,6 s, R 1,5 m, N 4), datato al primo tocco.
+- **C1 `player_net.py`:** rete sui giocatori, non provata (GPU, lunga).
+
+| Condizione | Baseline | Tocco | B2 | Decoder |
+|---|---|---|---|---|
+| Simulazione vecchia (palla senza errore in aria), con B1 | 0,392 | 0,465 | 0,642 | 0,697 |
+| Nostra palla proiettata (camera a 30°), con B1 | 0,392 | 0,375 | 0,542 | 0,591 |
+| Nostra palla proiettata, senza B1 | 0,392 | 0,375 | 0,515 | 0,554 |
+| Solo palla di Metrica (tocchi cercati su di essa), senza B1 | 0,392 | 0,340 | 0,570 | 0,562 |
+
+- Il decoder regge in ogni condizione: +0,16 nella più prudente.
+- Nelle simulazioni del collega la nostra palla non aveva l'errore in aria e il rumore dei giocatori
+  era 0,2 m (misurato: 0,02 m). Interruttori di prova aggiunti nella copia locale, non committati:
+  `DFL_CAM_ANGLE` (palla proiettata) e `DFL_OURS_NONE` (solo palla di Metrica).
+- La Metrica simulata è levigata ma senza i suoi errori veri (1,3 m a terra): il pari tra le due
+  palle è leggermente ottimista per Metrica.
+

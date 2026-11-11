@@ -17,6 +17,7 @@ Per match, data/external/bassek2025/converted/<match>.npz:
     alive (F,)        BallStatus: 1 ball in play, 0 dead
 
     python pipeline/convert_dfl.py
+    DFL_SRC=/kaggle/input/<dataset> DFL_CONVERTED=/kaggle/working/dfl_converted python pipeline/convert_dfl.py
 """
 
 import glob
@@ -29,8 +30,10 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-SRC = os.path.join(ROOT, "data", "external", "bassek2025")
-OUT = os.path.join(SRC, "converted")
+# $DFL_SRC: folder with the original XML (e.g. a read-only Kaggle input); $DFL_CONVERTED: where the
+# .npz go. Both default to the local layout.
+SRC = os.environ.get("DFL_SRC") or os.path.join(ROOT, "data", "external", "bassek2025")
+OUT = os.environ.get("DFL_CONVERTED") or os.path.join(SRC, "converted")
 LENGTH, WIDTH = 105.0, 68.0
 
 FRAMESET = re.compile(r'<FrameSet GameSection="(\w+)" MatchId="[^"]+" TeamId="([^"]+)" PersonId="([^"]+)"')
