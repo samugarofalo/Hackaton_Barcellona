@@ -559,3 +559,35 @@ punto 4 del §8 se avanza tempo.
   (rumore), un taglio su quattro cade in aria; i dribbling hanno tocchi troppo lievi per tagliare,
   quindi curvano e vengono "raddrizzati" a torto; e anche col taglio perfetto il possesso non
   migliora. Scartata.
+
+## 14. Prova equa sulla palla e modelli di riconoscimento delle azioni (11/11)
+
+### Palla (`pipeline/dfl_ball_fair.py`, DFL, 2 angoli × 2 semi)
+
+La vecchia simulazione dava alla nostra palla la posizione vera (niente errore in aria): 0,583 col
+tocco era un'illusione. Ora la nostra palla è proiettata da una camera come la nostra, con vuoti
+misurati, retta ≤ 2 s e Metrica oltre; Metrica = palla vera levigata su 12 fotogrammi.
+
+| Regola | Metrica | Nostra (proiettata) |
+|---|---|---|
+| baseline ±50 | 0,429 | 0,439 |
+| controllo | 0,426 | 0,461 |
+| tocco T2 | **0,495** | 0,449 |
+| tocco di traverso | 0,351 | **0,515** (0,503 / 0,527) |
+| tocco di traverso + controllo | 0,282 | 0,343 |
+
+- Migliori coppie: nostra + tocco di traverso 0,515; Metrica + tocco 0,495. Differenza dentro le
+  incertezze della simulazione (Metrica simulata è migliore della vera in aria e a terra; la nostra
+  simulata non ha falsi rilevamenti).
+- **"Tocco di traverso + controllo", previsto nel §8, è sbagliato**: il controllo va tolto.
+- Ogni palla ha la sua regola: il tocco di traverso non funziona sulla palla levigata di Metrica.
+
+### Modelli di ball action spotting presi così come sono (`data/external/spotting/`, fuori git)
+
+T-DEED con squadra (checkpoint sn-teamspotting) e AdaSpot (HF, piccolo e grande), addestrati sul
+broadcast SoccerNet. Su SoccerTrack v2 117093, 15 min, 796 azioni vere, tre finestre 1920:
+T-DEED soglia 0,05 trova il 21% delle azioni entro ±0,5 s (85% dei previsti giusti, il caso dà 66%),
+squadra giusta 64% (caso 50%); AdaSpot 7%. Sul panorama intero ridotto quasi niente (1–3%).
+Sulla nostra partita (5 min da 20000): 72 eventi T-DEED a 0,2 (62 "sinistra"), AdaSpot 5–20.
+Video: `data/cleanup/spotting_20000_27499.mp4`. Conclusione: senza riaddestramento sulla nostra
+inquadratura non servono.
