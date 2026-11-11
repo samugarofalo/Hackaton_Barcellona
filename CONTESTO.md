@@ -544,3 +544,18 @@ ma tutte le varianti stanno tra 0,10 e 0,15 contro un tetto di 0,96. Il collo di
 come si riconosce il tocco ma la palla: vista nel 46% / 29% dei fotogrammi vivi. Due partite sole,
 proxy severo: il guadagno di 0,02 è al limite del rumore. Per la consegna non si integra; resta il
 punto 4 del §8 se avanza tempo.
+
+## 13. Metrica in aria e traiettorie dritte (11/11, `pipeline/straight_ball.py`), solo prove
+
+- **Palla di Metrica contro il 3D delle due camere:** sopra i 2 m Metrica sta a 3–4 m dal punto
+  vero, la nostra proiezione a 8–27 m; a terra è il contrario (nostra 0,6 m, Metrica 1,3 m).
+  Regola "Metrica quando le due palle distano > 8 m": cambia il 6,5% dei fotogrammi con 3D, errore
+  lì 11,2 → 4,4 m. Non messa nella catena (decisione: niente di non verificato sul possesso).
+- **Traiettorie dritte** (tratti tra cambi bruschi di velocità; se si scostano dalla corda più di
+  DEV la si sostituisce con la corda): su DFL (35°) spellF1 tocco 0,508 → 0,516, di traverso
+  0,551 → 0,541; sulla partita l'errore in aria scende poco (17 → 16 m sopra i 4 m) e a terra
+  peggiora. Con i tagli presi dalla palla vera (oracolo) l'errore in aria va 5,7 → 2,8 m ma lo
+  spellF1 resta 0,516–0,523 / 0,555–0,557. Cause: la nostra palla ha ~460 cambi bruschi al minuto
+  (rumore), un taglio su quattro cade in aria; i dribbling hanno tocchi troppo lievi per tagliare,
+  quindi curvano e vengono "raddrizzati" a torto; e anche col taglio perfetto il possesso non
+  migliora. Scartata.

@@ -1,7 +1,8 @@
 """Debug video: method 4 (fuse.py "ours_m" players) with three ball versions, plus Metrica. 2x2 grid.
 
   1 Metrica              supplied ATD; white ball
-  4 our ball only        green; nothing where the detector has no ball
+  4 final ball           green = detected, cyan = interpolated (gaps <= fuse.BALL_GAP), white = Metrica
+                         in longer gaps: the ball of the submission chain
   4a gaps interpolated   green = detected, cyan = interpolated (gaps <= fuse.BALL_GAP frames)
   4b Metrica fill        green = detected, white = Metrica's ball where ours is missing
 Keepers (keepers.py) in panels 4/4a/4b: square with a yellow frame, in their team's colour.
@@ -36,8 +37,11 @@ def main():
     v = load(start, n)
     mp, mteam, mb = v["metrica"]
     ours_m, ob = v["ours_m"]
-    balls = [ob, v["ball_interp"], v["ball_mfill"]]
-    names = ["1 Metrica", "4 our ball only", "4a gaps interpolated", "4b Metrica fill"]
+    interp = np.isfinite(v["ball_interp"][:, 0])
+    final = np.where(interp[:, None], v["ball_interp"], v["ball_mfill"])
+    balls = [final, v["ball_interp"], v["ball_mfill"]]
+    names = ["4 final", "4a gaps interpolated", "4b Metrica fill"]
+    names = ["1 Metrica"] + names
     out = os.path.join(ROOT, "data", "cleanup", "compare_balls_{}_{}.mp4".format(start, start + n - 1))
     enc = encoder(out, SIZE)
     stats = {i: [0, 0] for i in (1, 2, 3)}
@@ -55,7 +59,8 @@ def main():
         t = [nearest(mp[k, on], mteam[k, on], b1)]
         items = ours_m.get(k, [])
         detected = np.isfinite(ob[k, 0])
-        for (p, _), bl, fill in zip(panels[1:], balls, (None, CYAN, WHITE)):
+        fills = (CYAN if interp[k] else WHITE, CYAN, WHITE)
+        for (p, _), bl, fill in zip(panels[1:], balls, fills):
             for it in items:
                 if np.isfinite(it[0][0]):
                     c = p(*it[0] * SCALE)
