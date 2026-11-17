@@ -1,0 +1,10 @@
+# Pinned dependencies of the submission chain (pipeline/make_submission.py), Python 3.11.
+# torch: the CPU build is enough, the chain runs on CPU at prediction time.
+numpy==2.4.6
+pandas==3.1.1
+pyarrow==26.0.1
+scipy==1.17.1
+scikit-learn==1.9.1
+joblib==1.6.0
+lightgbm==4.7.0
+torch==2.15.0
